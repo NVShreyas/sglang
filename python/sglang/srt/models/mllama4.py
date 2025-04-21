@@ -122,8 +122,7 @@ class Llama4ForConditionalGeneration(nn.Module):
 
     def set_eagle3_layers_to_capture(self):
         self.capture_aux_hidden_states = True
-        num_layers = self.config.num_hidden_layers
-        self.model.layers_to_capture = [2, num_layers // 2, num_layers - 3]
+        self.language_model.set_eagle3_layers_to_capture()
     
     def get_embed_and_head(self):
         return self.language_model.model.embed_tokens.weight, self.language_model.lm_head.weight
