@@ -482,6 +482,11 @@ class Llama4ForCausalLM(LlamaForCausalLM):
         prefix: str = "",
     ):
         return Llama4Model(config, quant_config=quant_config, prefix=prefix)
+    
+    def set_eagle3_layers_to_capture(self):
+        self.capture_aux_hidden_states = True
+        num_layers = self.config.num_hidden_layers
+        self.model.layers_to_capture = [2, num_layers // 2, num_layers - 3]
 
 
 EntryClass = [Llama4ForCausalLM]

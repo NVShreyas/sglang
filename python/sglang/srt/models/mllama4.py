@@ -120,6 +120,14 @@ class Llama4ForConditionalGeneration(nn.Module):
 
         return name, loaded_weight
 
+    def set_eagle3_layers_to_capture(self):
+        self.capture_aux_hidden_states = True
+        num_layers = self.config.num_hidden_layers
+        self.model.layers_to_capture = [2, num_layers // 2, num_layers - 3]
+    
+    def get_embed_and_head(self):
+        return self.language_model.model.embed_tokens.weight, self.language_model.lm_head.weight
+
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> Set[str]:
 
         stacked_params_mapping = [
