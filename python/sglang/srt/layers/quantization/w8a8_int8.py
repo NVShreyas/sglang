@@ -1,16 +1,10 @@
 from typing import Any, Callable, Dict, List, Optional
 
 import torch
-
-from sglang.srt.utils import is_cuda_available, set_weight_attrs
-
-is_cuda = is_cuda_available()
-if is_cuda:
-    from sgl_kernel import int8_scaled_mm
-
 from torch.nn.parameter import Parameter
 
 from sglang.srt.distributed import get_tensor_model_parallel_world_size
+from sglang.srt.layers.amx_utils import _amx_process_weight_after_loading
 from sglang.srt.layers.linear import LinearMethodBase
 from sglang.srt.layers.parameter import ChannelQuantScaleParameter, ModelWeightParameter
 from sglang.srt.layers.quantization.base_config import (
@@ -18,6 +12,19 @@ from sglang.srt.layers.quantization.base_config import (
     QuantizeMethodBase,
 )
 from sglang.srt.layers.quantization.int8_kernel import per_token_quant_int8
+from sglang.srt.utils import (
+    cpu_has_amx_support,
+    is_cpu,
+    is_cuda,
+    set_weight_attrs,
+    use_intel_amx_backend,
+)
+
+_is_cuda = is_cuda()
+_is_cpu_amx_available = cpu_has_amx_support()
+_is_cpu = is_cpu()
+if _is_cuda:
+    from sgl_kernel import int8_scaled_mm
 
 
 class W8A8Int8Config(QuantizationConfig):
@@ -74,6 +81,13 @@ class W8A8Int8LinearMethod(LinearMethodBase):
         self.quantization_config = quantization_config
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        if _is_cpu:
+            assert (
+                _is_cpu_amx_available
+            ), "W8A8Int8LinearMethod on CPU requires that CPU has AMX support"
+            _amx_process_weight_after_loading(layer, ["weight"])
+            return
+
         layer.weight = Parameter(layer.weight.t(), requires_grad=False)
         layer.weight_scale = Parameter(layer.weight_scale.data, requires_grad=False)
 
@@ -114,6 +128,16 @@ class W8A8Int8LinearMethod(LinearMethodBase):
         x: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ):
+        if use_intel_amx_backend(layer):
+            return torch.ops.sgl_kernel.int8_scaled_mm_with_quant(
+                x,
+                layer.weight,
+                layer.weight_scale,
+                bias,
+                x.dtype,
+                True,  # is_vnni
+            )
+
         x_q, x_scale = per_token_quant_int8(x)
 
         return int8_scaled_mm(
@@ -208,6 +232,13 @@ class W8A8Int8MoEMethod:
         layer.register_parameter("w2_input_scale", w2_input_scale)
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        if _is_cpu:
+            assert (
+                _is_cpu_amx_available
+            ), "W8A8Int8MoEMethod on CPU requires that CPU has AMX support"
+            _amx_process_weight_after_loading(layer, ["w13_weight", "w2_weight"])
+            return
+
         layer.w13_weight = Parameter(layer.w13_weight, requires_grad=False)
         layer.w2_weight = Parameter(layer.w2_weight, requires_grad=False)
         layer.w13_weight_scale = Parameter(
@@ -227,12 +258,14 @@ class W8A8Int8MoEMethod:
         use_grouped_topk: bool,
         topk_group: Optional[int] = None,
         num_expert_group: Optional[int] = None,
+        num_fused_shared_experts: int = 0,
         custom_routing_function: Optional[Callable] = None,
         correction_bias: Optional[torch.Tensor] = None,
         activation: str = "silu",
         apply_router_weight_on_input: bool = False,
         inplace: bool = True,
         no_combine: bool = False,
+        routed_scaling_factor: Optional[float] = None,
     ) -> torch.Tensor:
         from sglang.srt.layers.moe.fused_moe_triton.fused_moe import fused_experts
         from sglang.srt.layers.moe.topk import select_experts
@@ -246,9 +279,29 @@ class W8A8Int8MoEMethod:
             renormalize=renormalize,
             topk_group=topk_group,
             num_expert_group=num_expert_group,
+            num_fused_shared_experts=num_fused_shared_experts,
             custom_routing_function=custom_routing_function,
             correction_bias=correction_bias,
+            routed_scaling_factor=routed_scaling_factor,
         )
+
+        if use_intel_amx_backend(layer):
+            return torch.ops.sgl_kernel.fused_experts_cpu(
+                x,
+                layer.w13_weight,
+                layer.w2_weight,
+                topk_weights,
+                topk_ids,
+                False,  # inplace See [Note] inplace should be False in fused_experts.
+                True,  # use_int8_w8a8
+                False,  # use_fp8_w8a16
+                layer.w13_weight_scale,  # w1_scale
+                layer.w2_weight_scale,  # w2_scale
+                None,  # block_size
+                layer.w13_input_scale,  # a1_scale
+                layer.w2_input_scale,  # a2_scale
+                True,  # is_vnni
+            )
 
         return fused_experts(
             x,
@@ -266,4 +319,5 @@ class W8A8Int8MoEMethod:
             a1_scale=layer.w13_input_scale,
             a2_scale=layer.w2_input_scale,
             no_combine=no_combine,
+            routed_scaling_factor=routed_scaling_factor,
         )
