@@ -102,6 +102,7 @@ class DSACPLayerCommunicator(LayerCommunicator):
         allow_reduce_scatter: bool = False,
         is_last_layer: bool = False,
         qkv_latent_func: Optional[Callable] = None,
+        enable_fused_add_rmsnorm_quant: bool = False,
     ):
         super().__init__(
             layer_scatter_modes,
@@ -110,6 +111,7 @@ class DSACPLayerCommunicator(LayerCommunicator):
             allow_reduce_scatter,
             is_last_layer,
             qkv_latent_func,
+            enable_fused_add_rmsnorm_quant=enable_fused_add_rmsnorm_quant,
         )
 
     def _post_init_communicate(self):

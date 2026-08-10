@@ -840,10 +840,17 @@ def flashinfer_deepgemm_w8a8_block_fp8_linear_with_fallback(
 
     For SM90 (Hopper), this uses the DeepGEMM JIT with automatic swapAB selection.
     """
-    assert input_scale is None
+    # Pre-quantized activation (input already fp8 + column-major TMA-aligned input_scale, e.g. from
+    # the fused Add+RMSNorm+fp8-quant producer): skip internal quant and consume it directly. The
+    # raw fp8_blockscale_gemm_sm90 op accepts (fp8_input, input_scale); the M>=32 half already
+    # forwards input_scale to DeepGEMM below.
+    prequant = input_scale is not None
 
-    output_dtype = input.dtype
-    dtype_supported = output_dtype == torch.bfloat16
+    # Pre-quant: fp8 input drives a bf16 output. Otherwise the bf16 activation dtype flows through.
+    output_dtype = torch.bfloat16 if prequant else input.dtype
+    dtype_supported = (
+        input.dtype == torch.float8_e4m3fn if prequant else output_dtype == torch.bfloat16
+    )
 
     # fp8_blockscale_gemm_sm90 requires: N % 64 == 0, K % 128 == 0
     shape_supported = weight.shape[0] % 64 == 0 and weight.shape[1] % 128 == 0
@@ -887,7 +894,7 @@ def flashinfer_deepgemm_w8a8_block_fp8_linear_with_fallback(
     output = fp8_blockscale_gemm_sm90(
         input_2d,
         weight,
-        input_scale=None,  # BF16 input, internal quantization
+        input_scale=input_scale,  # None -> BF16 input + internal quant; given -> pre-quant fp8 input
         weight_scale=weight_scale,
         out_dtype=output_dtype,
     )

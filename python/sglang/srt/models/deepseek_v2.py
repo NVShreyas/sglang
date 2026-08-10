@@ -206,11 +206,38 @@ from sglang.srt.utils import (
     BumpAllocator,
     LazyValue,
     add_prefix,
+    get_bool_env_var,
     is_non_idle_and_non_empty,
     make_layers,
     use_intel_amx_backend,
 )
 from sglang.srt.utils.custom_op import register_custom_op
+from sglang.srt.distributed.device_communicators.pynccl_allocator import (
+    is_symmetric_memory_enabled,
+)
+from sglang.kernels.ops.layernorm.fused_add_rmsnorm_quant import (
+    is_supported_fused_add_rmsnorm_quant_hidden_size,
+)
+from functools import lru_cache
+
+
+@lru_cache(maxsize=1)
+def _fused_add_rmsnorm_quant_globally_enabled() -> bool:
+    """Global (shape-independent) gate for the fused Add-residual + RMSNorm + 1x128 fp8 block-quant
+    producer. Deliberately conservative: CUDA/SM90 only, and requires --enable-symm-mem, because the
+    whole validated win is the symm-mem (multicast all-reduce) config and on the non-symm path the
+    fresh output allocation can regress vs the stock 2-kernel producer. Per-model eligibility (fp8
+    block-quant + supported hidden_size) is checked at the LayerCommunicator construction site.
+    Opt out with SGLANG_DISABLE_FUSED_ADD_RMSNORM_QUANT=1."""
+    if get_bool_env_var("SGLANG_DISABLE_FUSED_ADD_RMSNORM_QUANT", "false"):
+        return False
+    if _use_aiter:  # ROCm has its own fused RMSNorm+quant path
+        return False
+    if not is_symmetric_memory_enabled():
+        return False
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() < (9, 0):
+        return False
+    return True
 
 if _use_aiter:
     from sglang.srt.layers.rocm_linear_utils import aiter_dsv3_router_gemm
@@ -2373,6 +2400,18 @@ class DeepseekV2DecoderLayer(nn.Module):
 
         self._gfx95_quant_format = self._detect_gfx95_quant_format()
 
+        # Opt into the CUDA fused Add-residual + RMSNorm + fp8 block-quant producer for the
+        # (H=hidden_size) residual norms when eligible. Conservative: symm-mem + CUDA/SM90 (global
+        # gate) and fp8 block-quant + supported hidden_size (here). Falls back to the stock 2-kernel
+        # path otherwise; the flow is byte-identical when disabled.
+        enable_fused_add_rmsnorm_quant = (
+            _fused_add_rmsnorm_quant_globally_enabled()
+            and quant_config is not None
+            and quant_config.get_name() == "fp8"
+            and getattr(quant_config, "weight_block_size", None) is not None
+            and is_supported_fused_add_rmsnorm_quant_hidden_size(config.hidden_size)
+        )
+
         if self.dsa_enable_prefill_cp or self.mla_enable_prefill_cp:
             # DSACPLayerCommunicator is flavor-agnostic; its internal gates
             # read both dsa_use_prefill_cp and mla_use_prefill_cp. The rename
@@ -2386,6 +2425,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                     is_nextn or (self.layer_id == self.config.num_hidden_layers - 1)
                 ),
                 qkv_latent_func=self.self_attn.prepare_qkv_latent,
+                enable_fused_add_rmsnorm_quant=enable_fused_add_rmsnorm_quant,
             )
         else:
             self.layer_communicator = LayerCommunicator(
@@ -2397,6 +2437,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                     is_nextn or (self.layer_id == self.config.num_hidden_layers - 1)
                 ),
                 qkv_latent_func=self.self_attn.prepare_qkv_latent,
+                enable_fused_add_rmsnorm_quant=enable_fused_add_rmsnorm_quant,
             )
 
     def _detect_gfx95_quant_format(self) -> str:

@@ -30,6 +30,10 @@ from sglang.srt.distributed import (
 from sglang.srt.distributed.device_communicators.pynccl_allocator import (
     use_symmetric_memory,
 )
+from sglang.kernels.ops.layernorm.fused_add_rmsnorm_quant import (
+    fused_add_rmsnorm_quant,
+    is_supported_fused_add_rmsnorm_quant_hidden_size,
+)
 from sglang.srt.environ import envs
 from sglang.srt.layers.attention.dsa.utils import (
     dsa_use_prefill_cp,
@@ -458,6 +462,7 @@ class LayerCommunicator:
         force_layernorm_before_dp_gather: bool = False,
         enable_fused_ar_quant: bool = False,
         fused_ar_quant_keep_bf16: bool = False,
+        enable_fused_add_rmsnorm_quant: bool = False,
     ):
         self.layer_scatter_modes = layer_scatter_modes
         self.input_layernorm = input_layernorm
@@ -468,6 +473,7 @@ class LayerCommunicator:
         self.force_layernorm_before_dp_gather = force_layernorm_before_dp_gather
         self.enable_fused_ar_quant = enable_fused_ar_quant
         self.fused_ar_quant_keep_bf16 = fused_ar_quant_keep_bf16
+        self.enable_fused_add_rmsnorm_quant = enable_fused_add_rmsnorm_quant
 
         self._context = CommunicateContext.init_new()
         self._context.force_layernorm_before_dp_gather = (
@@ -718,6 +724,56 @@ class LayerCommunicator:
                             self.input_layernorm.variance_epsilon,
                             residual=residual,
                         )
+                    elif (
+                        self.enable_fused_add_rmsnorm_quant
+                        and is_supported_fused_add_rmsnorm_quant_hidden_size(
+                            hidden_states.shape[-1]
+                        )
+                    ):
+                        # CUDA fused Add-residual + RMSNorm + 1x128 fp8 block-quant. Emits the
+                        # (fp8, scale) tuple the fp8 block-scaled linears consume (skipping the
+                        # re-quant) + the pre-norm residual + the bf16 normed. Under DSA, pack the
+                        # bf16 normed as a 3-tuple (fp8, scale, bf16) so the indexer skips redundant
+                        # fp8 dequant (mirrors the aiter fp8 branch above).
+                        if post_residual_addition is not None:
+                            residual = residual + post_residual_addition
+                        _dsa_needs_bf16 = get_attn_tp_context().is_dsa
+                        M, H = hidden_states.shape
+                        # Fix A: the two bf16 outputs feed the post-attention TP all-reduce, so
+                        # allocate them in the NCCL symm-mem pool to keep the multicast all-reduce
+                        # (this branch only runs when symm-mem is enabled).
+                        with use_symmetric_memory(
+                            get_tp_group(), disabled=not is_allocation_symmetric()
+                        ):
+                            res_out = torch.empty(
+                                (M, H),
+                                dtype=hidden_states.dtype,
+                                device=hidden_states.device,
+                            )
+                            normed_out = torch.empty(
+                                (M, H),
+                                dtype=hidden_states.dtype,
+                                device=hidden_states.device,
+                            )
+                        x_fp8, x_scale, residual, normed = fused_add_rmsnorm_quant(
+                            hidden_states,
+                            residual,
+                            self.input_layernorm.weight.data,
+                            self.input_layernorm.variance_epsilon,
+                            residual_out=res_out,
+                            normed_out=normed_out,
+                        )
+                        hidden_states = (
+                            (x_fp8, x_scale, normed)
+                            if _dsa_needs_bf16
+                            else (x_fp8, x_scale)
+                        )
+                        if not getattr(self, "_fused_arq_logged", False):
+                            self._fused_arq_logged = True
+                            print(
+                                f"[fused-add-rmsnorm-quant] ACTIVE H={H} M={M} dsa={_dsa_needs_bf16}",
+                                flush=True,
+                            )
                     else:
                         hidden_states, residual = self.input_layernorm(
                             hidden_states,

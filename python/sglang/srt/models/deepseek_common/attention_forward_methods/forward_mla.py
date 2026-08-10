@@ -432,7 +432,15 @@ class DeepseekMLAForwardMixin:
                 if q_lora is not None:
                     if self.should_run_indexer(prev_topk_indices):
                         topk_indices = self.indexer(
-                            x=hidden_states,
+                            # The indexer's wk_weights_proj is an unquantized linear (needs bf16).
+                            # When the fused Add+RMSNorm+fp8-quant producer hands down a
+                            # (fp8, scale, bf16) tuple, feed it the bf16 normed (3rd element).
+                            x=(
+                                hidden_states[2]
+                                if isinstance(hidden_states, tuple)
+                                and len(hidden_states) == 3
+                                else hidden_states
+                            ),
                             q_lora=q_lora,
                             positions=positions,
                             forward_batch=forward_batch,
