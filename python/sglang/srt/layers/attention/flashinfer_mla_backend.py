@@ -1073,10 +1073,9 @@ class FlashInferMLAIndicesUpdaterPrefill:
         elif fast_verify_plan_kwargs is not None:
             kv_indices, kv_indptr, qo_indptr, custom_mask = (
                 spec_info.generate_attn_arg_prefill(
-                    req_pool_indices,
-                    paged_kernel_lens,
-                    paged_kernel_lens_sum,
-                    self.req_to_token,
+                    paged_kernel_lens=paged_kernel_lens,
+                    paged_kernel_lens_sum=paged_kernel_lens_sum,
+                    index_table=kv_view,
                     kv_indices_buf=fast_verify_plan_kwargs["kv_indices_buf"],
                 )
             )
@@ -1085,10 +1084,9 @@ class FlashInferMLAIndicesUpdaterPrefill:
             # TODO: Support topk > 1 with custom mask
             kv_indices, kv_indptr, qo_indptr, custom_mask = (
                 spec_info.generate_attn_arg_prefill(
-                    req_pool_indices,
-                    paged_kernel_lens,
-                    paged_kernel_lens_sum,
-                    self.req_to_token,
+                    paged_kernel_lens=paged_kernel_lens,
+                    paged_kernel_lens_sum=paged_kernel_lens_sum,
+                    index_table=kv_view,
                 )
             )
 
