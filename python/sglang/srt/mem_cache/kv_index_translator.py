@@ -246,6 +246,38 @@ class KVIndexTranslator:
         )
         self._index_table_memo: Optional[Tuple[weakref.ref, KVIndexTable]] = None
 
+    def full_flat_translate_args(self) -> Optional[Tuple[torch.Tensor, int]]:
+        """``(v2p_page_table, kernel_page_multiplier)`` for a kernel that
+        translates flat full-side ids itself, or ``None`` when this runner
+        does not translate (pass-through and static pools)."""
+        if not self.is_translating:
+            return None
+        return (self._full_v2p_table, self._full_page_multiplier)
+
+    def make_capture_tables(
+        self, *, max_bs: int, max_context_len: int
+    ) -> Optional[KVReadTables]:
+        """Capture-stable destinations for a backend to own, or None when this
+        pool needs no translation and the backend will never fill any.
+
+        Zero-filled: entry 0 is the reserved padding slot in every id space, so
+        a captured graph replaying before its first refresh reads padding, not
+        garbage.
+        """
+        if not self.is_translating:
+            return None
+        max_pages = -(-max_context_len // self.page_size)
+
+        def _zeros():
+            return torch.zeros(
+                (max_bs, max_pages), dtype=torch.int32, device=self.device
+            )
+
+        return KVReadTables(
+            full=_zeros(),
+            sliding_window=_zeros() if self._swa_v2p_table is not None else None,
+        )
+
     # -- per-batch view --------------------------------------------------------
 
     @property

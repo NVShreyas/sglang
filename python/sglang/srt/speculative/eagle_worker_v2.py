@@ -369,6 +369,14 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         if self.draft_extend_attn_backend is not None:
             self.draft_runner.attn_backend = self.draft_extend_attn_backend
         self._configure_qsa_mtp_index_share()
+        # Every backend reached by a unified-pool draft forward must use this
+        # runner's translator so fused-draft reads address physical slots.
+        translator = self.draft_runner.kv_index_translator
+        if translator.is_translating:
+            backends = [self.draft_attn_backend, self.draft_extend_attn_backend]
+            if self.draft_attn_backend is not None:
+                backends += self.draft_attn_backend.attn_backends
+            translator.bind_and_verify_backends(backends)
         self.tree_mask_mode = default_tree_mask_mode()
 
     def _configure_qsa_mtp_index_share(self) -> None:
