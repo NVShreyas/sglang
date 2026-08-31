@@ -60,6 +60,12 @@ def generate_draft_decode_kv_indices(
     kv_indices,
     kv_indptr,
     positions,
+    # Unified pool: v2p page table + kernel page multiplier of the DRAFT
+    # runner's KV family. req_to_token holds VIRTUAL ids there, and the fused
+    # draft pool is indexed by draft-dense ids, so the emitted indices must be
+    # translated in place. None/0 under TRANSLATE=False (compiled out).
+    v2p,
+    kv_mult,
     pool_len: tl.constexpr,
     kv_indices_stride: tl.constexpr,
     kv_indptr_stride: tl.constexpr,
@@ -68,6 +74,7 @@ def generate_draft_decode_kv_indices(
     num_tokens_upper: tl.constexpr,
     page_size: tl.constexpr,
     NUM_STEPS: tl.constexpr = 0,
+    TRANSLATE: tl.constexpr = False,
 ):
     # Optional token-block parallelism (NUM_STEPS > 0): the first grid axis
     # packs (draft step, token block) as ``step + NUM_STEPS * block``,
@@ -129,6 +136,16 @@ def generate_draft_decode_kv_indices(
         for _ in range(num_loop):
             mask = kv_offset < seq_len
             data = tl.load(token_pool_ptr + kv_offset, mask=mask)
+            if TRANSLATE:
+                # dense(t) = v2p[t // ps] * (ps * mult) + t % ps, clamped so a
+                # freed (-1) v2p row lands in the page-0 sink -- the
+                # translate_kv_loc_for_kernel formula, in int64 (Pattern A: the
+                # page * stride product overflows int32).
+                d64 = data.to(tl.int64)
+                phys = tl.load(v2p + d64 // page_size, mask=mask, other=0)
+                data = tl.maximum(
+                    phys * (page_size * kv_mult) + d64 % page_size, 0
+                )
             tl.store(kv_ptr + kv_offset, data, mask=mask)
             kv_offset += BLOCK_SIZE
     else:
@@ -136,6 +153,12 @@ def generate_draft_decode_kv_indices(
             tok_off = i * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
             mask = tok_off < seq_len
             data = tl.load(token_pool_ptr + tok_off, mask=mask)
+            if TRANSLATE:
+                d64 = data.to(tl.int64)
+                phys = tl.load(v2p + d64 // page_size, mask=mask, other=0)
+                data = tl.maximum(
+                    phys * (page_size * kv_mult) + d64 % page_size, 0
+                )
             tl.store(kv_ptr + tok_off, data, mask=mask)
 
     # Extension entries and kv_indptr belong to token block 0 alone; other
@@ -165,6 +188,15 @@ def generate_draft_decode_kv_indices(
             extend_data = tl.load(
                 token_pool_ptr + start + extend_offset,
                 mask=extend_offset < iters,
+            )
+
+        if TRANSLATE:
+            e64 = extend_data.to(tl.int64)
+            phys = tl.load(
+                v2p + e64 // page_size, mask=extend_offset < iters, other=0
+            )
+            extend_data = tl.maximum(
+                phys * (page_size * kv_mult) + e64 % page_size, 0
             )
 
         tl.store(
