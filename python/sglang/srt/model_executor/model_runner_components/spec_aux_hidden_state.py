@@ -39,6 +39,15 @@ class SpecAuxHiddenStateConfig(msgspec.Struct, kw_only=True):
     # Draft layers whose KV cache uses the target SWA pool capacity.
     eagle_draft_swa_num_layers: Optional[int] = None
     eagle_aux_hidden_state_layer_ids: Any = None
+    # EAGLE draft KV head geometry, recorded so the unified fused-draft-KV
+    # path can build the draft region and price the fused entry at TARGET boot
+    # — before the draft worker exists. `total_kv_heads` is the UNDIVIDED
+    # count: this config resolves before the attention-TP group is
+    # initialized, so consumers apply attn_tp themselves. None when no EAGLE
+    # draft config was loaded.
+    eagle_draft_total_kv_heads: Optional[int] = None
+    eagle_draft_head_dim: Optional[int] = None
+    eagle_draft_v_head_dim: Optional[int] = None
     dflash_use_aux_hidden_state: bool = False
     dflash_draft_num_layers: Optional[int] = None
     dflash_target_layer_ids: Any = None
@@ -85,18 +94,20 @@ def _resolve_eagle_aux_hidden_state(
     ):
         return
 
-    draft_model_config = model_config
-    if get_spec().speculative_draft_model_path:
-        draft_model_config = ModelConfig.from_server_args(
-            server_args,
-            model_path=get_spec().speculative_draft_model_path,
-            model_revision=get_spec().speculative_draft_model_revision,
-            is_draft_model=True,
-        )
+    # Load draft config to get layer count for KV cache sizing. A path-less
+    # NEXTN run has its MTP head inside the target checkpoint, but still needs
+    # is_draft_model=True for ModelConfig to populate num_nextn_predict_layers.
+    draft_path = get_spec().speculative_draft_model_path
+    draft_model_config = ModelConfig.from_server_args(
+        server_args,
+        model_path=draft_path,
+        model_revision=get_spec().speculative_draft_model_revision,
+        is_draft_model=True,
+    )
     num_nextn_predict_layers = draft_model_config.num_nextn_predict_layers
     if num_nextn_predict_layers is not None:
         config.eagle_draft_num_layers = int(num_nextn_predict_layers)
-    elif get_spec().speculative_draft_model_path:
+    elif draft_path is not None:
         config.eagle_draft_num_layers = int(
             max(
                 draft_model_config.num_hidden_layers,
@@ -105,6 +116,14 @@ def _resolve_eagle_aux_hidden_state(
         )
     else:
         return
+
+    # Store the undivided head count: distributed groups are not initialized
+    # at this point. Consumers apply attention TP when building the pool.
+    config.eagle_draft_total_kv_heads = int(
+        draft_model_config.get_total_num_kv_heads()
+    )
+    config.eagle_draft_head_dim = int(draft_model_config.head_dim)
+    config.eagle_draft_v_head_dim = int(draft_model_config.v_head_dim)
 
     if draft_model_config.is_hybrid_swa and not draft_model_config.is_deepseek_v4_arch:
         config.eagle_draft_swa_num_layers = len(
