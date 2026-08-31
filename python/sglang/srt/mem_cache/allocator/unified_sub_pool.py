@@ -1014,6 +1014,7 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         virt_tokens: torch.Tensor,
         *,
         out: Optional[torch.Tensor] = None,
+        multiplier: Optional[int] = None,
     ) -> torch.Tensor:
         """Virtual token ids -> kernel-facing ids:
 
@@ -1025,7 +1026,9 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         kernel ABI wants int32 narrows where it fills that buffer.
         """
         with record_function("MultiEndedAlloc.translate_kv_loc_for_kernel"):
-            return self._translate_loc_fused(virt_tokens, dcp_size=1, out=out)
+            return self._translate_loc_fused(
+                virt_tokens, dcp_size=1, out=out, multiplier=multiplier
+            )
 
     def _translate_loc_fused(
         self,
@@ -1035,6 +1038,7 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         dcp_rank: int = 0,
         out: Optional[torch.Tensor] = None,
         out_width: Optional[int] = None,
+        multiplier: Optional[int] = None,
     ) -> torch.Tensor:
         """One launch for the read and write conversions alike; see
         `write_loc_to_kernel_ids`."""
@@ -1052,7 +1056,8 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             loc=loc,
             v2p=self.virtual_to_physical,
             page_size=self.pool_page_size,
-            stride=self.pool_page_size * self.kernel_page_multiplier,
+            stride=self.pool_page_size
+            * (self.kernel_page_multiplier if multiplier is None else multiplier),
             dcp_size=dcp_size,
             dcp_rank=dcp_rank,
             out=out,
@@ -1065,6 +1070,7 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         *,
         out: Optional[torch.Tensor] = None,
         out_width: Optional[int] = None,
+        multiplier: Optional[int] = None,
     ) -> torch.Tensor:
         """Widened virtual WRITE loc (`out_cache_loc`) -> kernel-facing id.
 
@@ -1081,6 +1087,7 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
                 dcp_rank=parallel.attn_dcp_rank,
                 out=out,
                 out_width=out_width,
+                multiplier=multiplier,
             )
 
     # -- alloc --
