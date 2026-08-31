@@ -512,9 +512,40 @@ class KVCacheConfigurator:
                     UnifiedSWATokenToKVPoolAllocator,
                 ),
             ):
-                draft_virtual_id_space = (
-                    token_to_kv_pool_allocator.draft_virtual_id_space
-                )
+                alloc = token_to_kv_pool_allocator
+                host_spec = self._fused_draft_host_spec(alloc)
+                if host_spec is not None:
+                    # FUSED arm: the draft's KV lives inside the target's
+                    # full-side pages, so the draft worker binds views over
+                    # the target buffer instead of allocating a pool of its
+                    # own. The id-space choke point recognizes the pool and
+                    # translates at the draft's own dense multiplier.
+                    from sglang.srt.mem_cache.unified_memory_pool import (
+                        UnifiedDraftKVPool,
+                    )
+
+                    assert (
+                        req_to_token_pool is not None
+                    ), "a draft worker shares the target's req_to_token_pool"
+                    draft_pool = UnifiedDraftKVPool(
+                        unified_buffer=alloc.unified_buffer,
+                        host_sub_pool_name="full",
+                        host_allocator=alloc,
+                        page_size=self.page_size,
+                        start_layer=0,
+                        end_layer=host_spec.draft_region.layer_num,
+                    )
+                    return _InitializedPools(
+                        req_to_token_pool=req_to_token_pool,
+                        token_to_kv_pool=draft_pool,
+                        token_to_kv_pool_allocator=alloc,
+                        unified_memory_pool=None,
+                    )
+                # PRIVATE arm: the draft owns a pool indexed by the target's
+                # raw virtual ids, so it is sized by the full sub-allocator's
+                # virtual id space. NOT `size_full`: the SWA allocator reports
+                # the static token budget there, smaller than the id space.
+                draft_virtual_id_space = alloc.draft_virtual_id_space
                 assert draft_virtual_id_space >= sizes.max_total_num_tokens, (
                     "unified allocator virtual space smaller than the token "
                     f"budget: virtual_id_space={draft_virtual_id_space} < "
@@ -625,6 +656,23 @@ class KVCacheConfigurator:
             token_to_kv_pool=token_to_kv_pool,
             token_to_kv_pool_allocator=token_to_kv_pool_allocator,
         )
+
+    def _fused_draft_host_spec(self, alloc):
+        """The host sub-pool spec this draft's KV fuses into, or None for the
+        private-pool fallback (the draft then owns a raw-virtual-indexed pool
+        of its own)."""
+        if not self.spec_algorithm.is_eagle():
+            return None
+        spec = alloc.unified_buffer.mha_spec("full")
+        if spec.draft_region is None:
+            # The gate admitted an EAGLE-family draft, so target boot must
+            # have resolved the region; missing means a boot-order bug.
+            raise ValueError(
+                "Speculative decoding on a unified target requires the fused "
+                "draft-KV region, which was not resolved at target boot "
+                "(EAGLE-family with a uniform-row draft checkpoint required)."
+            )
+        return spec
 
     def _init_unified_mamba_pools(
         self,
