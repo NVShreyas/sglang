@@ -376,6 +376,7 @@ def _compact_kv(
     cu_k,
     out_k,
     out_v,
+    v2p_pages,
     topk: tl.constexpr,
     heads: tl.constexpr,
     dim: tl.constexpr,
@@ -383,6 +384,8 @@ def _compact_kv(
     idx_stride: tl.constexpr,
     BLOCK_TOPK: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    PAGE_SIZE: tl.constexpr,
+    HAS_V2P: tl.constexpr,
 ):
     batch, head, block = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     cols = block * BLOCK_TOPK + tl.arange(0, BLOCK_TOPK)
@@ -398,6 +401,10 @@ def _compact_kv(
         mask=valid,
         other=0,
     )
+    if HAS_V2P:
+        virtual_page = slots // PAGE_SIZE
+        page_offset = slots % PAGE_SIZE
+        slots = tl.load(v2p_pages + virtual_page) * PAGE_SIZE + page_offset
     src = slots[:, None] * heads * dim + head * dim + dims[None, :]
     dst = (pack_start + cols)[:, None] * heads * dim + head * dim + dims[None, :]
     mask = valid[:, None] & (dims[None, :] < dim)
@@ -419,7 +426,19 @@ def qwen_sparse_valid_counts_triton(seq_lens, indices, counts, batch, topk):
 
 
 def qwen_sparse_kv_extraction_compact_triton(
-    k, v, req_to_token, req_indices, indices, seq_lens, cu_k, out_k, out_v, batch, topk
+    k,
+    v,
+    req_to_token,
+    req_indices,
+    indices,
+    seq_lens,
+    cu_k,
+    out_k,
+    out_v,
+    batch,
+    topk,
+    v2p_pages=None,
+    page_size=1,
 ):
     _, heads, dim = k.shape
     block_topk = 16
@@ -433,6 +452,7 @@ def qwen_sparse_kv_extraction_compact_triton(
         cu_k,
         out_k,
         out_v,
+        v2p_pages if v2p_pages is not None else req_to_token,
         topk,
         heads,
         dim,
@@ -440,6 +460,8 @@ def qwen_sparse_kv_extraction_compact_triton(
         indices.stride(0),
         BLOCK_TOPK=block_topk,
         BLOCK_D=triton.next_power_of_2(dim),
+        PAGE_SIZE=page_size,
+        HAS_V2P=v2p_pages is not None,
         num_warps=8,
     )
 
