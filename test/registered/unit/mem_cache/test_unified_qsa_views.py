@@ -144,10 +144,9 @@ class TestUnifiedQSAViews(unittest.TestCase):
 
         page = 1
         cps = self.PAGE // self.RATIO
-        qsa_rows = (
-            spec.qsa_page_index(torch.tensor([page]), 1, self.PAGE) * cps
-            + torch.arange(cps)
-        )
+        qsa_rows = spec.qsa_page_index(
+            torch.tensor([page]), 1, self.PAGE
+        ) * cps + torch.arange(cps)
         qsa[qsa_rows] = 7
         draft_id = page * self.PAGE * spec.draft_kernel_page_multiplier()
         dk[0][draft_id].fill_(3)

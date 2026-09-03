@@ -428,9 +428,9 @@ class MambaSubPoolSpec(SubPoolSpec):
     def __post_init__(self):
         super().__post_init__()
         assert len(self.conv_state_shapes) > 0, "conv_state_shapes must be non-empty"
-        assert (
-            self.draft_region is None
-        ), "mamba state pages never carry a fused draft region"
+        assert self.draft_region is None, (
+            "mamba state pages never carry a fused draft region"
+        )
 
     def conv_row_bytes(self, idx: int) -> int:
         return _prod(self.conv_state_shapes[idx]) * self.conv_dtype.itemsize
@@ -688,9 +688,9 @@ class UnifiedKVPool:
         the draft page math consumers use (`draft_kernel_page_multiplier`,
         `draft_region_offset_in_page`)."""
         s = self._specs_by_name[name]
-        assert (
-            s.draft_region is not None
-        ), f"sub-pool {name!r} carries no fused draft region"
+        assert s.draft_region is not None, (
+            f"sub-pool {name!r} carries no fused draft region"
+        )
         return s
 
     def max_slots(self, name: str) -> int:
@@ -1552,12 +1552,14 @@ class UnifiedHybridReqToTokenPool(HybridReqToTokenPool):
             req_pool_size, dtype=torch.int32, device=self.device
         )
         if enable_mamba_extra_buffer:
-            self.req_index_to_mamba_ping_pong_track_buffer_mapping: torch.Tensor = torch.zeros(
-                (req_pool_size, self.mamba_ping_pong_track_buffer_size),
-                # int64 to match the parent's uncast index_put source (int32 dest
-                # would dtype-mismatch on the first radix prefill).
-                dtype=torch.int64,
-                device=self.device,
+            self.req_index_to_mamba_ping_pong_track_buffer_mapping: torch.Tensor = (
+                torch.zeros(
+                    (req_pool_size, self.mamba_ping_pong_track_buffer_size),
+                    # int64 to match the parent's uncast index_put source (int32 dest
+                    # would dtype-mismatch on the first radix prefill).
+                    dtype=torch.int64,
+                    device=self.device,
+                )
             )
 
     def translate_mamba_indices(self, virtual_ids: torch.Tensor) -> torch.Tensor:

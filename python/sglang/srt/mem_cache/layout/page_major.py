@@ -173,9 +173,9 @@ def build_page_major_qsa_mha_views(
     host_page_bytes = layer_num * layer_bytes
     page_bytes = page_stride_bytes or host_page_bytes
     assert page_bytes >= host_page_bytes
-    assert (
-        anchor_bytes == 0
-    ), "QSA's global compressed view currently requires anchor_bytes=0"
+    assert anchor_bytes == 0, (
+        "QSA's global compressed view currently requires anchor_bytes=0"
+    )
     assert page_bytes % itemsize == 0
     assert page_bytes % qsa_row_bytes == 0
 
