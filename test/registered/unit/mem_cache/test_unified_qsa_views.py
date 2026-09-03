@@ -4,8 +4,14 @@ import unittest
 
 import torch
 
-from sglang.srt.mem_cache.layout.page_major import build_page_major_qsa_mha_views
-from sglang.srt.mem_cache.unified_memory_pool import QSAMHASubPoolSpec
+from sglang.srt.mem_cache.layout.page_major import (
+    build_mha_views,
+    build_page_major_qsa_mha_views,
+)
+from sglang.srt.mem_cache.unified_memory_pool import (
+    DenseDraftRegion,
+    QSAMHASubPoolSpec,
+)
 from sglang.test.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=10, suite="base-a-test-cpu")
@@ -82,6 +88,76 @@ class TestUnifiedQSAViews(unittest.TestCase):
         self.assertTrue(torch.all(self.v[2][dst] == 5))
         dst_rows = self._qsa_rows(1, torch.arange(dst * 16, (dst + 1) * 16))
         self.assertTrue(torch.all(self.qsa[dst_rows] == 7))
+
+    def test_fused_draft_region_composes_with_qsa_envelope(self):
+        draft = DenseDraftRegion(
+            layer_num=2,
+            head_num=1,
+            head_dim=8,
+            store_dtype=torch.bfloat16,
+        )
+        spec = QSAMHASubPoolSpec(
+            name="full",
+            layer_num=3,
+            head_num=2,
+            head_dim=8,
+            store_dtype=torch.bfloat16,
+            grow_direction="down",
+            qsa_index_kv_heads=1,
+            qsa_index_head_dim=16,
+            qsa_compress_ratio=self.RATIO,
+            draft_region=draft,
+        )
+        num_pages = 3
+        page_bytes = spec.page_bytes(self.PAGE)
+        raw = torch.zeros(
+            num_pages * page_bytes + spec.view_tail_pad_bytes(self.PAGE),
+            dtype=torch.uint8,
+        )
+        k, v, qsa = build_page_major_qsa_mha_views(
+            raw,
+            layer_num=spec.layer_num,
+            head_num=spec.head_num,
+            head_dim=spec.head_dim,
+            v_head_dim=spec.v_head_dim,
+            store_dtype=spec.store_dtype,
+            qsa_index_kv_heads=spec.qsa_index_kv_heads,
+            qsa_index_head_dim=spec.qsa_index_head_dim,
+            qsa_store_dtype=spec.qsa_store_dtype,
+            qsa_compress_ratio=spec.qsa_compress_ratio,
+            page_size=self.PAGE,
+            num_pages=num_pages,
+            page_stride_bytes=page_bytes,
+        )
+        dk, dv = build_mha_views(
+            raw,
+            layer_num=draft.layer_num,
+            head_num=draft.head_num,
+            head_dim=draft.head_dim,
+            v_head_dim=draft.head_dim,
+            store_dtype=draft.store_dtype,
+            page_size=self.PAGE,
+            num_pages=num_pages,
+            page_stride_blocks=spec.draft_kernel_page_multiplier(),
+            region_offset_bytes=spec.draft_region_offset_in_page(self.PAGE),
+        )
+
+        page = 1
+        cps = self.PAGE // self.RATIO
+        qsa_rows = (
+            spec.qsa_page_index(torch.tensor([page]), 1, self.PAGE) * cps
+            + torch.arange(cps)
+        )
+        qsa[qsa_rows] = 7
+        draft_id = page * self.PAGE * spec.draft_kernel_page_multiplier()
+        dk[0][draft_id].fill_(3)
+        dv[1][draft_id].fill_(5)
+
+        self.assertTrue(torch.all(qsa[qsa_rows] == 7))
+        self.assertTrue(torch.all(dk[0][draft_id] == 3))
+        self.assertTrue(torch.all(dv[1][draft_id] == 5))
+        self.assertTrue(torch.count_nonzero(k[0][page]) == 0)
+        self.assertTrue(torch.count_nonzero(v[2][page]) == 0)
 
 
 if __name__ == "__main__":
