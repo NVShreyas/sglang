@@ -761,6 +761,7 @@ class FlashInferAttnBackend(AttentionBackend):
                 use_ragged=False,
                 encoder_lens=encoder_lens[:bs] if encoder_lens is not None else None,
                 spec_info=spec_info,
+                kv_view=kv_view,
             )
         elif forward_mode.is_dllm_extend():
             self.indices_updater_prefill.update(
@@ -953,6 +954,7 @@ class FlashInferAttnBackend(AttentionBackend):
         return layer.k_scale, layer.v_scale
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):
+        kv_view = self.kv_index_translator.index_table_for_batch(forward_batch)
         swa_out_cache_loc = None
         if self.use_sliding_window_kv_pool and forward_batch.out_cache_loc is not None:
             swa_out_cache_loc = self.kv_index_translator.sliding_window_write_loc_for(
@@ -992,6 +994,7 @@ class FlashInferAttnBackend(AttentionBackend):
                 use_ragged=False,
                 encoder_lens=forward_batch.encoder_lens,
                 spec_info=forward_batch.spec_info,
+                kv_view=kv_view,
             )
             self.forward_metadata = PrefillMetadata(
                 self.prefill_wrappers_verify,
@@ -1881,6 +1884,8 @@ class FlashInferIndicesUpdaterPrefill:
         cross_attention_custom_mask: Optional[torch.Tensor] = None,
         extend_prefix_lens_cpu: Optional[List[int]] = None,
         custom_kv_indices: Optional[torch.Tensor] = None,
+        *,
+        kv_view=None,
     ):
         # Keep the signature for type checking. It will be assigned during runtime.
         raise NotImplementedError()
@@ -1901,6 +1906,8 @@ class FlashInferIndicesUpdaterPrefill:
         cross_attention_custom_mask: Optional[torch.Tensor] = None,
         extend_prefix_lens_cpu: Optional[List[int]] = None,
         custom_kv_indices: Optional[torch.Tensor] = None,
+        *,
+        kv_view=None,
     ):
         if use_ragged:
             assert prefix_lens is not None
@@ -1931,6 +1938,7 @@ class FlashInferIndicesUpdaterPrefill:
             multi_item_params=multi_item_params,
             seq_lens_cpu=seq_lens_cpu,
             custom_kv_indices=custom_kv_indices,
+            kv_view=kv_view,
         )
 
     def update_sliding_window(
@@ -1949,6 +1957,8 @@ class FlashInferIndicesUpdaterPrefill:
         cross_attention_custom_mask: Optional[torch.Tensor] = None,
         extend_prefix_lens_cpu: Optional[List[int]] = None,
         custom_kv_indices: Optional[torch.Tensor] = None,
+        *,
+        kv_view=None,
     ):
         if custom_kv_indices is not None:
             raise RuntimeError(
@@ -2036,6 +2046,7 @@ class FlashInferIndicesUpdaterPrefill:
                     if (wrapper_id == 0 and not use_ragged and spec_info is None)
                     else -1
                 ),
+                kv_view=kv_view,
             )
 
     def _build_swa_prefix_custom_mask(
@@ -2095,6 +2106,8 @@ class FlashInferIndicesUpdaterPrefill:
         cross_attention_custom_mask: Optional[torch.Tensor] = None,
         extend_prefix_lens_cpu: Optional[List[int]] = None,
         custom_kv_indices: Optional[torch.Tensor] = None,
+        *,
+        kv_view=None,
     ):
         if custom_kv_indices is not None:
             raise RuntimeError(
@@ -2130,6 +2143,7 @@ class FlashInferIndicesUpdaterPrefill:
                 cross_attention_custom_mask=(
                     cross_attention_custom_mask if wrapper_id == 1 else None
                 ),
+                kv_view=kv_view,
             )
 
     def call_begin_forward(
@@ -2153,6 +2167,8 @@ class FlashInferIndicesUpdaterPrefill:
         seq_lens_cpu: Optional[torch.Tensor] = None,
         custom_kv_indices: Optional[torch.Tensor] = None,
         window_left: int = -1,
+        *,
+        kv_view=None,
     ):
         bs = len(seq_lens)
         # Unified SWA wrapper-0: gather from the swa canonical directly -- its
@@ -2200,6 +2216,7 @@ class FlashInferIndicesUpdaterPrefill:
             custom_mask = cross_attention_custom_mask
         else:
             assert isinstance(spec_info, SpecInput)
+            assert kv_view is not None
             # The window wrapper gathers from the SWA-side array; the CSR
             # builders are source-agnostic, so hand them the narrowed view
             # (mirrors the non-spec branch's source_ids dispatch).
