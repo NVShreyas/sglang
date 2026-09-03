@@ -578,6 +578,23 @@ class KVCacheConfigurator:
             if self.layer_info.start_layer <= i < self.layer_info.end_layer
         ]
 
+        from sglang.srt.configs.qwen4_exp import Qwen4ExpTextConfig
+        from sglang.srt.layers.attention.qsa.config import parse_qsa_profile
+
+        qsa_profile = parse_qsa_profile(self.model_config.hf_text_config)
+        ple_kwargs = {}
+        if isinstance(config, Qwen4ExpTextConfig):
+            ple_kwargs = dict(
+                short_conv_layer_ids=[
+                    i
+                    for i in config.short_conv_layer_ids
+                    if self.layer_info.start_layer <= i < self.layer_info.end_layer
+                ],
+                short_conv_state_shape=config.short_conv_state_shape,
+                ngram_context_len=config.ngram_context_len,
+                ngram_eos_token_id=int(config.eos_token_id),
+            )
+
         bundle = init_unified_mamba_pools(
             device=self.device,
             kv_cache_dtype=self.kv_cache_dtype,
@@ -621,6 +638,8 @@ class KVCacheConfigurator:
             forward_stream=self.forward_stream,
             # Lazy compaction: default ON, env-var escape hatch for rollback / A/B.
             lazy_compaction=_should_enable_lazy_compaction(),
+            qsa_profile=qsa_profile,
+            **ple_kwargs,
         )
         return bundle
 

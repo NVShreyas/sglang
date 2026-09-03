@@ -239,3 +239,9 @@ def launch_graph_metadata(
         PAGE_BLOCK=128,
         num_warps=1,
     )
+    translate = getattr(pool, "translate_qsa_graph_metadata_", None)
+    if translate is not None:
+        translate(
+            indexer.graph_compressed_page_table,
+            indexer.graph_write_locs,
+        )
