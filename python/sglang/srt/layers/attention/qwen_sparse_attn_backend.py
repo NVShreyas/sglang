@@ -269,6 +269,20 @@ class QwenSparseAttnBackend(AttentionBackend):
         return self._translate_kv_loc(slots.reshape(-1).long()).reshape(shape)
 
     @staticmethod
+    def _kv_geometry(buffer: torch.Tensor) -> Tuple[int, int]:
+        return int(buffer.shape[-2]), int(buffer.shape[-1])
+
+    def _gather_kv_slots(
+        self, buffer: torch.Tensor, slots: torch.Tensor
+    ) -> torch.Tensor:
+        if buffer.ndim == 4:
+            return buffer[
+                slots // self._unified_page_size,
+                slots % self._unified_page_size,
+            ]
+        return buffer.index_select(0, slots)
+
+    @staticmethod
     def _is_speculative_paged_mode(forward_mode) -> bool:
         if forward_mode is None:
             return False
@@ -1492,11 +1506,15 @@ class QwenSparseAttnBackend(AttentionBackend):
             )
 
         k_parts = [
-            k_buffer.index_select(0, physical_slots(req_indices[i], sequence_lens[i]))
+            self._gather_kv_slots(
+                k_buffer, physical_slots(req_indices[i], sequence_lens[i])
+            )
             for i in range(len(sequence_lens))
         ]
         v_parts = [
-            v_buffer.index_select(0, physical_slots(req_indices[i], sequence_lens[i]))
+            self._gather_kv_slots(
+                v_buffer, physical_slots(req_indices[i], sequence_lens[i])
+            )
             for i in range(len(sequence_lens))
         ]
         sequence_lens_tensor = torch.tensor(
@@ -1597,10 +1615,11 @@ class QwenSparseAttnBackend(AttentionBackend):
             batch, pages_per_row, page, device
         )
         capacity_rows = self._cuda_graph_max_tokens if metadata.is_cuda_graph else batch
+        num_kv_heads, head_dim = self._kv_geometry(k_buffer)
         packed_k, packed_v = self._get_fa2_scratch(
             max(capacity_rows, batch) * stride,
-            k_buffer.shape[1],
-            k_buffer.shape[2],
+            num_kv_heads,
+            head_dim,
             k_buffer.dtype,
             k_buffer.device,
         )
@@ -1623,8 +1642,6 @@ class QwenSparseAttnBackend(AttentionBackend):
             v2p_pages=self._full_v2p_page_table,
             page_size=self._unified_page_size,
         )
-        num_kv_heads = k_buffer.shape[1]
-        head_dim = k_buffer.shape[2]
         kc = (
             packed_k[: batch * stride]
             .view(-1, page, num_kv_heads, head_dim)
@@ -1723,18 +1740,17 @@ class QwenSparseAttnBackend(AttentionBackend):
             cu_seqlens_k,
             batch,
             topk,
-            v2p_pages=self._full_v2p_page_table,
-            page_size=self._unified_page_size,
         )
         scratch_capacity = (
             self._cuda_graph_max_tokens * topk
             if metadata.is_cuda_graph
             else batch * topk
         )
+        num_kv_heads, head_dim = self._kv_geometry(k_buffer)
         packed_k, packed_v = self._get_fa2_scratch(
             scratch_capacity,
-            k_buffer.shape[1],
-            k_buffer.shape[2],
+            num_kv_heads,
+            head_dim,
             k_buffer.dtype,
             k_buffer.device,
         )
@@ -1754,6 +1770,8 @@ class QwenSparseAttnBackend(AttentionBackend):
             packed_v,
             batch,
             topk,
+            v2p_pages=self._full_v2p_page_table,
+            page_size=self._unified_page_size,
         )
         output = flash_attn_varlen_func(
             q=q,

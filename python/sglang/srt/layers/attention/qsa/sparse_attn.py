@@ -387,6 +387,14 @@ def _compact_kv(
     BLOCK_D: tl.constexpr,
     PAGE_SIZE: tl.constexpr,
     HAS_V2P: tl.constexpr,
+    PAGE_MAJOR_KV: tl.constexpr,
+    KV_PAGE_SIZE: tl.constexpr,
+    k_page_stride: tl.constexpr,
+    k_token_stride: tl.constexpr,
+    k_head_stride: tl.constexpr,
+    v_page_stride: tl.constexpr,
+    v_token_stride: tl.constexpr,
+    v_head_stride: tl.constexpr,
 ):
     batch, head, block = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     cols = block * BLOCK_TOPK + tl.arange(0, BLOCK_TOPK)
@@ -406,11 +414,28 @@ def _compact_kv(
         virtual_page = slots // PAGE_SIZE
         page_offset = slots % PAGE_SIZE
         slots = tl.load(v2p_pages + virtual_page) * PAGE_SIZE + page_offset
-    src = slots[:, None] * heads * dim + head * dim + dims[None, :]
+    if PAGE_MAJOR_KV:
+        kv_page = slots // KV_PAGE_SIZE
+        kv_offset = slots % KV_PAGE_SIZE
+        src_k = (
+            kv_page[:, None] * k_page_stride
+            + kv_offset[:, None] * k_token_stride
+            + head * k_head_stride
+            + dims[None, :]
+        )
+        src_v = (
+            kv_page[:, None] * v_page_stride
+            + kv_offset[:, None] * v_token_stride
+            + head * v_head_stride
+            + dims[None, :]
+        )
+    else:
+        src_k = slots[:, None] * k_token_stride + head * k_head_stride + dims[None, :]
+        src_v = slots[:, None] * v_token_stride + head * v_head_stride + dims[None, :]
     dst = (pack_start + cols)[:, None] * heads * dim + head * dim + dims[None, :]
     mask = valid[:, None] & (dims[None, :] < dim)
-    tl.store(out_k + dst, tl.load(k + src, mask=mask, other=0.0), mask=mask)
-    tl.store(out_v + dst, tl.load(v + src, mask=mask, other=0.0), mask=mask)
+    tl.store(out_k + dst, tl.load(k + src_k, mask=mask, other=0.0), mask=mask)
+    tl.store(out_v + dst, tl.load(v + src_v, mask=mask, other=0.0), mask=mask)
 
 
 def qwen_sparse_valid_counts_triton(seq_lens, indices, counts, batch, topk):
@@ -443,7 +468,24 @@ def qwen_sparse_kv_extraction_compact_triton(
     v2p_pages=None,
     page_size=1,
 ):
-    _, heads, dim = k.shape
+    if k.ndim == 4:
+        _, kv_page_size, heads, dim = k.shape
+        if v.ndim != 4 or v.shape[-2:] != (heads, dim):
+            raise ValueError(
+                "page-major QSA K/V views must have matching head geometry"
+            )
+        page_major_kv = True
+        k_page_stride, k_token_stride, k_head_stride = k.stride()[:3]
+        v_page_stride, v_token_stride, v_head_stride = v.stride()[:3]
+    else:
+        _, heads, dim = k.shape
+        if v.ndim != 3 or v.shape[-2:] != (heads, dim):
+            raise ValueError("QSA K/V buffers must have matching head geometry")
+        kv_page_size = 1
+        page_major_kv = False
+        k_page_stride = v_page_stride = 0
+        k_token_stride, k_head_stride = k.stride()[:2]
+        v_token_stride, v_head_stride = v.stride()[:2]
     block_topk = 16
     _compact_kv[(batch, heads, triton.cdiv(topk, block_topk))](
         k,
@@ -465,6 +507,14 @@ def qwen_sparse_kv_extraction_compact_triton(
         BLOCK_D=triton.next_power_of_2(dim),
         PAGE_SIZE=page_size,
         HAS_V2P=v2p_pages is not None,
+        PAGE_MAJOR_KV=page_major_kv,
+        KV_PAGE_SIZE=kv_page_size,
+        k_page_stride=k_page_stride,
+        k_token_stride=k_token_stride,
+        k_head_stride=k_head_stride,
+        v_page_stride=v_page_stride,
+        v_token_stride=v_token_stride,
+        v_head_stride=v_head_stride,
         num_warps=8,
     )
 
