@@ -572,13 +572,10 @@ class KVCacheConfigurator:
                 size_overrides = {
                     "max_total_num_tokens": draft_virtual_id_space,
                 }
-                if (
-                    isinstance(
-                        token_to_kv_pool_allocator,
-                        UnifiedSWATokenToKVPoolAllocator,
-                    )
-                    and self.is_hybrid_swa
-                ):
+                if isinstance(
+                    token_to_kv_pool_allocator,
+                    UnifiedSWATokenToKVPoolAllocator,
+                ) and getattr(self, "is_hybrid_swa", False):
                     size_overrides["full_max_total_num_tokens"] = draft_virtual_id_space
                     if not self.is_hybrid_swa_mtp_draft or self.draft_swa_full_capacity:
                         size_overrides["swa_max_total_num_tokens"] = (

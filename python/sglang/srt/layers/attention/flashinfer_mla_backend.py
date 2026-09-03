@@ -409,6 +409,7 @@ class FlashInferMLAAttnBackend(AttentionBackend):
                 forward_mode=forward_mode,
                 spec_info=spec_info,
                 seq_lens_cpu=seq_lens_cpu,
+                kv_view=kv_view,
                 in_capture=True,
             )
             if forward_mode.is_target_verify() and (
@@ -426,9 +427,11 @@ class FlashInferMLAAttnBackend(AttentionBackend):
                 forward_mode=forward_mode,
                 spec_info=spec_info,
                 seq_lens_cpu=forward_batch.seq_lens_cpu,
+                kv_view=kv_view,
             )
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):
+        kv_view = self.kv_index_translator.index_table_for_batch(forward_batch)
         if forward_batch.forward_mode.is_decode_or_idle():
             self.indices_updater_decode.update(
                 forward_batch.seq_lens,
@@ -454,6 +457,7 @@ class FlashInferMLAAttnBackend(AttentionBackend):
                 prefill_wrapper_paged=self.prefill_wrapper_verify,
                 use_ragged=False,
                 spec_info=forward_batch.spec_info,
+                kv_view=kv_view,
             )
             self.forward_metadata = PrefillMetadata(self.prefill_wrapper_verify, False)
         else:
@@ -556,6 +560,7 @@ class FlashInferMLAAttnBackend(AttentionBackend):
         forward_mode: ForwardMode,
         spec_info: Optional[SpecInput],
         seq_lens_cpu: Optional[torch.Tensor],
+        kv_view,
         in_capture: bool = False,
     ):
         """Shared capture+replay body for the cuda-graph init path.
@@ -634,6 +639,7 @@ class FlashInferMLAAttnBackend(AttentionBackend):
                     if use_generic_fast_plan
                     else None
                 ),
+                kv_view=kv_view,
             )
         else:
             raise ValueError(f"Invalid forward mode: {forward_mode=}")
@@ -1022,6 +1028,7 @@ class FlashInferMLAIndicesUpdaterPrefill:
         attn_dcp_metadata: Optional[DecodeContextParallelMetadata] = None,
         fast_verify_plan_kwargs: Optional[dict] = None,
         *,
+        kv_view=None,
         qo_indptr_cpu: Optional[torch.Tensor] = None,
         kv_indptr_cpu: Optional[torch.Tensor] = None,
         kv_len_arr_cpu: Optional[torch.Tensor] = None,
@@ -1047,6 +1054,7 @@ class FlashInferMLAIndicesUpdaterPrefill:
             spec_info,
             attn_dcp_metadata=attn_dcp_metadata,
             fast_verify_plan_kwargs=fast_verify_plan_kwargs,
+            kv_view=kv_view,
             qo_indptr_cpu=qo_indptr_cpu,
             kv_indptr_cpu=kv_indptr_cpu,
             kv_len_arr_cpu=kv_len_arr_cpu,
@@ -1068,6 +1076,7 @@ class FlashInferMLAIndicesUpdaterPrefill:
         attn_dcp_metadata: Optional[DecodeContextParallelMetadata] = None,
         fast_verify_plan_kwargs: Optional[dict] = None,
         *,
+        kv_view=None,
         qo_indptr_cpu: Optional[torch.Tensor] = None,
         kv_indptr_cpu: Optional[torch.Tensor] = None,
         kv_len_arr_cpu: Optional[torch.Tensor] = None,
@@ -1095,6 +1104,7 @@ class FlashInferMLAIndicesUpdaterPrefill:
             qo_indptr = qo_indptr[: bs + 1]
             custom_mask = None
         elif fast_verify_plan_kwargs is not None:
+            assert kv_view is not None
             kv_indices, kv_indptr, qo_indptr, custom_mask = (
                 spec_info.generate_attn_arg_prefill(
                     paged_kernel_lens=paged_kernel_lens,
@@ -1105,6 +1115,7 @@ class FlashInferMLAIndicesUpdaterPrefill:
             )
         else:
             assert isinstance(spec_info, SpecInput)
+            assert kv_view is not None
             # TODO: Support topk > 1 with custom mask
             kv_indices, kv_indptr, qo_indptr, custom_mask = (
                 spec_info.generate_attn_arg_prefill(
