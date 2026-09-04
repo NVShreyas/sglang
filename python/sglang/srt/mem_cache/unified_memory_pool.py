@@ -1075,11 +1075,9 @@ class UnifiedQSAMHATokenToKVPool(UnifiedMHATokenToKVPool):
         cache_k: torch.Tensor,
         cache_v: torch.Tensor,
     ) -> None:
-        # QSA preserves explicit [page, offset] dimensions so its sparse
-        # extraction kernel can consume page ids. Convert the unified dense
-        # kernel id back to those two coordinates for target K/V writes.
-        stride = self.page_size * self._qsa_spec.blocks_per_page()
-        pages = loc.long() // stride
+        # QSA preserves explicit [page, offset] dimensions and performs its
+        # own virtual->physical translation in QwenSparseAttnBackend.
+        pages = loc.long() // self.page_size
         offsets = loc.long() % self.page_size
         self.k_buffer[layer_idx][pages, offsets] = cache_k
         self.v_buffer[layer_idx][pages, offsets] = cache_v
@@ -1641,6 +1639,10 @@ class UnifiedHybridLinearKVPool(HybridLinearKVPool):
 
 class UnifiedQSAHybridLinearKVPool(QSATokenToKVPool):
     """Compressed-QSA hybrid wrapper over a unified Full page envelope."""
+
+    # QwenSparseAttnBackend translates its write locations and page tables to
+    # physical QSA coordinates; the generic dense-id translator must defer.
+    backend_resolves_kv_indices = True
 
     def translate_qsa_compressed_locs(self, layer_id, loc):
         layer_offset = self._transfer_full_attention_id(layer_id)

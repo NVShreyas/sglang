@@ -172,6 +172,9 @@ class KVIndexTranslator:
             isinstance(token_to_kv_pool, UnifiedDraftKVPool)
             and token_to_kv_pool.host_allocator is token_to_kv_pool_allocator
         )
+        self.backend_resolves_indices = is_unified_target and bool(
+            getattr(token_to_kv_pool, "backend_resolves_kv_indices", False)
+        )
         self.is_translating = is_unified_target or is_fused_draft
         if is_fused_draft:
             alloc = token_to_kv_pool_allocator
@@ -191,7 +194,9 @@ class KVIndexTranslator:
                 alloc.full_attn_allocator.translate_write_loc_for_kernel,
                 multiplier=draft_mult,
             )
-            self.defer_read_translate = get_parallel().attn_dcp_size > 1
+            self.defer_read_translate = (
+                get_parallel().attn_dcp_size > 1 or self.backend_resolves_indices
+            )
             # The draft family is dense-only: window layers read and write
             # the SAME fused slots as full layers, so there is no separate swa
             # id space — the sliding-window write loc aliases the dense loc at
@@ -213,7 +218,9 @@ class KVIndexTranslator:
             self._translate_write_full = alloc.translate_write_loc_for_kernel
             # DCP read ids stay WIDENED to the consumer: selecting this rank's
             # share changes the length, so only the production site can do it.
-            self.defer_read_translate = get_parallel().attn_dcp_size > 1
+            self.defer_read_translate = (
+                get_parallel().attn_dcp_size > 1 or self.backend_resolves_indices
+            )
             if isinstance(alloc, UnifiedSWATokenToKVPoolAllocator):
                 self._swa_v2p_table = alloc.swa_v2p_page_table
                 self._swa_page_multiplier = alloc.swa_kernel_page_multiplier
@@ -583,7 +590,11 @@ class KVIndexTranslator:
         in-flight machinery that reads it.
         """
         self._index_table_memo = None
-        if not self.is_translating or forward_batch.out_cache_loc is None:
+        if (
+            not self.is_translating
+            or self.backend_resolves_indices
+            or forward_batch.out_cache_loc is None
+        ):
             return
         forward_batch.out_cache_loc = self._translate_write_full(
             forward_batch.out_cache_loc
