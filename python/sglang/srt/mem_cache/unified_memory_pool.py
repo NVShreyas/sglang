@@ -1067,6 +1067,22 @@ class UnifiedQSAMHATokenToKVPool(UnifiedMHATokenToKVPool):
         # compressed row/page ids to the layer's region in the page envelope.
         return [self.qsa_compressed_flat] * self._qsa_spec.layer_num
 
+    def _store_kv_layer(
+        self,
+        layer_idx: int,
+        loc: torch.Tensor,
+        cache_k: torch.Tensor,
+        cache_v: torch.Tensor,
+    ) -> None:
+        # QSA preserves explicit [page, offset] dimensions so its sparse
+        # extraction kernel can consume page ids. Convert the unified dense
+        # kernel id back to those two coordinates for target K/V writes.
+        stride = self.page_size * self._qsa_spec.blocks_per_page()
+        pages = loc.long() // stride
+        offsets = loc.long() % self.page_size
+        self.k_buffer[layer_idx][pages, offsets] = cache_k
+        self.v_buffer[layer_idx][pages, offsets] = cache_v
+
     def translate_qsa_compressed_locs(
         self, layer_offset: int, loc: torch.Tensor
     ) -> torch.Tensor:
