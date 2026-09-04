@@ -284,6 +284,7 @@ class TestUnifiedDraftKVPool(unittest.TestCase):
         host_kvcache = SimpleNamespace(
             qsa_token_topk=2048,
             qsa_compress_ratio=4,
+            qsa_compressed_page_size=16,
             qsa_block_topk=512,
             qsa_index_kv_heads=1,
             qsa_index_head_dim=128,
@@ -298,6 +299,7 @@ class TestUnifiedDraftKVPool(unittest.TestCase):
         for attr in (
             "qsa_token_topk",
             "qsa_compress_ratio",
+            "qsa_compressed_page_size",
             "qsa_block_topk",
             "qsa_index_kv_heads",
             "qsa_index_head_dim",
