@@ -979,6 +979,7 @@ class UnifiedDraftKVPool(MHATokenToKVPool):
         for attr in (
             "qsa_token_topk",
             "qsa_compress_ratio",
+            "qsa_compressed_page_size",
             "qsa_block_topk",
             "qsa_index_kv_heads",
             "qsa_index_head_dim",
