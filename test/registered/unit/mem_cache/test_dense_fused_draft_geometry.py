@@ -342,14 +342,14 @@ class TestUnifiedDraftKVPool(unittest.TestCase):
         host._store_kv_layer(
             0,
             host_loc,
-            torch.full((1, 2, 4), 3.0),
-            torch.full((1, 2, 4), 5.0),
+            torch.full((1, 2, 4), 3.0, dtype=torch.bfloat16),
+            torch.full((1, 2, 4), 5.0, dtype=torch.bfloat16),
         )
         draft._store_kv_layer(
             0,
             draft_loc,
-            torch.full((1, 1, 3), 7.0),
-            torch.full((1, 1, 3), 11.0),
+            torch.full((1, 1, 3), 7.0, dtype=torch.bfloat16),
+            torch.full((1, 1, 3), 11.0, dtype=torch.bfloat16),
         )
 
         self.assertTrue(torch.all(host.k_buffer[0][host_loc] == 3))
