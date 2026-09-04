@@ -325,6 +325,38 @@ class TestUnifiedDraftKVPool(unittest.TestCase):
         host.move_kv_cache(to_tokens(dst_page), to_tokens(src_page))
         self.assertEqual(float(dp.k_buffer[0][dst_dense_d].sum()), 7.0 * 3)
 
+    def test_target_and_draft_stores_accept_strided_page_views(self):
+        pool = self._pool()
+        draft, _ = self._draft_pool(pool)
+        host = UnifiedMHATokenToKVPool(
+            unified_buffer=pool, sub_pool_name="full", page_size=self.PS
+        )
+        page = 2
+        host_loc = torch.tensor(
+            [page * self.PS * pool.mha_spec("full").blocks_per_page()]
+        )
+        draft_loc = torch.tensor(
+            [page * self.PS * draft.draft_kernel_page_multiplier + 1]
+        )
+
+        host._store_kv_layer(
+            0,
+            host_loc,
+            torch.full((1, 2, 4), 3.0),
+            torch.full((1, 2, 4), 5.0),
+        )
+        draft._store_kv_layer(
+            0,
+            draft_loc,
+            torch.full((1, 1, 3), 7.0),
+            torch.full((1, 1, 3), 11.0),
+        )
+
+        self.assertTrue(torch.all(host.k_buffer[0][host_loc] == 3))
+        self.assertTrue(torch.all(host.v_buffer[0][host_loc] == 5))
+        self.assertTrue(torch.all(draft.k_buffer[0][draft_loc] == 7))
+        self.assertTrue(torch.all(draft.v_buffer[0][draft_loc] == 11))
+
     def test_draft_side_moves_and_transfers_fail_loudly(self):
         pool = self._pool()
         dp, _ = self._draft_pool(pool)

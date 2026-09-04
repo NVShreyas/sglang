@@ -877,6 +877,19 @@ class UnifiedMHATokenToKVPool(MHATokenToKVPool):
     def get_kv_size_bytes(self):
         return 0, 0  # UnifiedKVPool logs the total; per-sub-pool would double-count
 
+    def _store_kv_layer(
+        self,
+        layer_idx: int,
+        loc: torch.Tensor,
+        cache_k: torch.Tensor,
+        cache_v: torch.Tensor,
+    ) -> None:
+        # Per-layer views stride across page envelopes, so the generic fast
+        # store's contiguous `.view(-1, row_dim)` is invalid. Advanced indexed
+        # assignment honors the view's row stride and is CUDA-graph safe.
+        self.k_buffer[layer_idx][loc] = cache_k
+        self.v_buffer[layer_idx][loc] = cache_v
+
     def move_kv_cache(self, tgt_loc: torch.Tensor, src_loc: torch.Tensor):
         """Relocate slots by whole page envelope.
         `tgt_loc`/`src_loc` are REAL physical token ids, not kernel-facing ids.
@@ -1006,6 +1019,17 @@ class UnifiedDraftKVPool(MHATokenToKVPool):
 
     def get_kv_size_bytes(self):
         return 0, 0  # fused into the host pages; UnifiedKVPool logs the total
+
+    def _store_kv_layer(
+        self,
+        layer_idx: int,
+        loc: torch.Tensor,
+        cache_k: torch.Tensor,
+        cache_v: torch.Tensor,
+    ) -> None:
+        # Draft views are another strided region of the host page envelope.
+        self.k_buffer[layer_idx][loc] = cache_k
+        self.v_buffer[layer_idx][loc] = cache_v
 
     def move_kv_cache(self, tgt_loc: torch.Tensor, src_loc: torch.Tensor):
         raise NotImplementedError(
