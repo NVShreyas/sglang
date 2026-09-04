@@ -1046,11 +1046,11 @@ class UnifiedQSAMHATokenToKVPool(UnifiedMHATokenToKVPool):
     def translate_qsa_compressed_locs(
         self, layer_offset: int, loc: torch.Tensor
     ) -> torch.Tensor:
-        cps = self._page_size // self._qsa_spec.qsa_compress_ratio
+        cps = self.page_size // self._qsa_spec.qsa_compress_ratio
         full_page = loc.long() // cps
         within_page = loc.long() % cps
         qsa_page = self._qsa_spec.qsa_page_index(
-            full_page, layer_offset, self._page_size
+            full_page, layer_offset, self.page_size
         )
         return qsa_page * cps + within_page
 
@@ -1058,14 +1058,14 @@ class UnifiedQSAMHATokenToKVPool(UnifiedMHATokenToKVPool):
         self, layer_offset: int, page_table: torch.Tensor
     ) -> torch.Tensor:
         translated = self._qsa_spec.qsa_page_index(
-            page_table.long(), layer_offset, self._page_size
+            page_table.long(), layer_offset, self.page_size
         )
         return translated.to(page_table.dtype)
 
     def move_kv_cache(self, tgt_loc: torch.Tensor, src_loc: torch.Tensor):
         if tgt_loc.numel() == 0:
             return
-        ps = self._page_size
+        ps = self.page_size
         assert tgt_loc.numel() % ps == 0 and src_loc.numel() == tgt_loc.numel()
         tgt_pages = tgt_loc.reshape(-1, ps)[:, 0].long() // ps
         src_pages = src_loc.reshape(-1, ps)[:, 0].long() // ps

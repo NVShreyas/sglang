@@ -11,6 +11,7 @@ from sglang.srt.mem_cache.layout.page_major import (
 from sglang.srt.mem_cache.unified_memory_pool import (
     DenseDraftRegion,
     QSAMHASubPoolSpec,
+    UnifiedQSAMHATokenToKVPool,
 )
 from sglang.test.ci.ci_register import register_cpu_ci
 
@@ -62,6 +63,18 @@ class TestUnifiedQSAViews(unittest.TestCase):
         mha = self.spec.layer_num * (self.spec.k_row_bytes() + self.spec.v_row_bytes())
         qsa = self.spec.layer_num * self.spec.qsa_row_bytes() // self.RATIO
         self.assertEqual(self.spec.entry_bytes(), mha + qsa)
+
+    def test_qsa_translation_uses_the_inherited_page_size(self):
+        pool = UnifiedQSAMHATokenToKVPool.__new__(UnifiedQSAMHATokenToKVPool)
+        pool.page_size = self.PAGE
+        pool._qsa_spec = self.spec
+        loc = torch.tensor([0, 15, 16, 31], dtype=torch.int64)
+
+        translated = pool.translate_qsa_compressed_locs(1, loc)
+
+        cps = self.PAGE // self.RATIO
+        expected = self.spec.qsa_page_index(loc // cps, 1, self.PAGE) * cps + loc % cps
+        torch.testing.assert_close(translated, expected, rtol=0, atol=0)
 
     def test_kv_and_qsa_regions_do_not_alias(self):
         for layer in range(self.spec.layer_num):
