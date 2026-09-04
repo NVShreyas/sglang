@@ -279,6 +279,31 @@ class TestUnifiedDraftKVPool(unittest.TestCase):
         self.assertEqual(len(dp.k_buffer), 1)
         self.assertEqual(dp.k_buffer[0].shape[1:], (1, 3))
 
+    def test_qsa_metadata_is_forwarded_from_host_pool(self):
+        pool = self._pool()
+        host_kvcache = SimpleNamespace(
+            qsa_token_topk=2048,
+            qsa_compress_ratio=4,
+            qsa_block_topk=512,
+            qsa_index_kv_heads=1,
+            qsa_index_head_dim=128,
+        )
+        allocator = SimpleNamespace(get_kvcache=lambda: host_kvcache)
+        draft_pool = UnifiedDraftKVPool(
+            unified_buffer=pool,
+            host_sub_pool_name="full",
+            host_allocator=allocator,
+            page_size=self.PS,
+        )
+        for attr in (
+            "qsa_token_topk",
+            "qsa_compress_ratio",
+            "qsa_block_topk",
+            "qsa_index_kv_heads",
+            "qsa_index_head_dim",
+        ):
+            self.assertEqual(getattr(draft_pool, attr), getattr(host_kvcache, attr))
+
     def test_host_page_move_carries_the_draft_bytes(self):
         # THE fused-layout property: compaction relocates whole page envelopes
         # on the HOST pool; a draft marker written in page A must arrive at
