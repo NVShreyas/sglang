@@ -958,6 +958,20 @@ class UnifiedDraftKVPool(MHATokenToKVPool):
         # dense translate is the HOST allocator's v2p at the DRAFT multiplier.
         self.host_allocator = host_allocator
         self.draft_kernel_page_multiplier = spec.draft_kernel_page_multiplier()
+        # QSA MTP index sharing queries cache geometry through the draft pool.
+        # The fused draft pool owns only views; forward the QSA metadata from
+        # the target composite whose pages it shares.
+        get_host_kvcache = getattr(host_allocator, "get_kvcache", None)
+        host_kvcache = get_host_kvcache() if get_host_kvcache is not None else None
+        for attr in (
+            "qsa_token_topk",
+            "qsa_compress_ratio",
+            "qsa_block_topk",
+            "qsa_index_kv_heads",
+            "qsa_index_head_dim",
+        ):
+            if host_kvcache is not None and hasattr(host_kvcache, attr):
+                setattr(self, attr, getattr(host_kvcache, attr))
         self._k_views = k_views
         self._v_views = v_views
         num_pages = max_slots // page_size
