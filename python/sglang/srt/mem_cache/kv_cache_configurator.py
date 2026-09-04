@@ -937,6 +937,19 @@ class KVCacheConfigurator:
         )
 
         aux = self.spec_aux_config
+        # A QSA draft owns indexer state in addition to K/V. The fused draft
+        # page region currently carries K/V only; binding QSA to it would
+        # either omit the draft index cache or alias the target's independent
+        # QSA state. Use the existing private-draft fallback while the target
+        # Full-KV + recurrent pools remain unified.
+        from sglang.srt.layers.attention.qsa.config import parse_qsa_profile
+
+        if parse_qsa_profile(self.model_config.hf_text_config) is not None:
+            logger.info(
+                "[unified-memory-pool] fused draft KV disabled for QSA; "
+                "using a private draft pool with independent QSA state."
+            )
+            return None
         # EXACTLY ONE of the two hybrid kinds. A model that is BOTH mambaish
         # and hybrid-SWA (Inkling-class) routes to the tri-pool factory, which
         # takes no `draft_kv_geometry` -- it would allocate UNFUSED while the
