@@ -559,7 +559,10 @@ class KVIndexTranslator:
         for backend in backends:
             if backend is None:
                 continue
-            if backend.kv_index_translator is None:
+            # Lightweight composite backends need not inherit BaseAttentionBackend
+            # and therefore may not predeclare the hook. Binding the attribute is
+            # still the contract; their reachable child backends are bound too.
+            if getattr(backend, "kv_index_translator", None) is None:
                 backend.kv_index_translator = self
                 continue
             assert backend.kv_index_translator is self, (

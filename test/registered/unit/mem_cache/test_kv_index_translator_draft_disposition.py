@@ -140,6 +140,17 @@ def _source(allocator, pool_obj):
 
 
 class TestKVIndexTranslatorDraftDisposition(unittest.TestCase):
+    def test_bind_accepts_a_lightweight_backend_wrapper(self):
+        _, allocator, _, draft_pool = _build()
+        translator = _source(allocator, draft_pool)
+        wrapper = SimpleNamespace()
+        child = SimpleNamespace(kv_index_translator=None)
+
+        translator.bind_and_verify_backends([wrapper, child])
+
+        self.assertIs(wrapper.kv_index_translator, translator)
+        self.assertIs(child.kv_index_translator, translator)
+
     def test_target_runner_uses_the_host_multiplier(self):
         _, allocator, kvcache, _ = _build()
         src = _source(allocator, kvcache)
