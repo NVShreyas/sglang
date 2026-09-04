@@ -76,20 +76,18 @@ class TestUnifiedQSAViews(unittest.TestCase):
         expected = self.spec.qsa_page_index(loc // cps, 1, self.PAGE) * cps + loc % cps
         torch.testing.assert_close(translated, expected, rtol=0, atol=0)
 
-    def test_qsa_store_converts_dense_ids_to_page_offsets(self):
+    def test_qsa_store_converts_physical_ids_to_page_offsets(self):
         pool = UnifiedQSAMHATokenToKVPool.__new__(UnifiedQSAMHATokenToKVPool)
         pool.page_size = self.PAGE
         pool._qsa_spec = self.spec
         pool.k_buffer = self.k
         pool.v_buffer = self.v
         page, offset = 2, 7
-        dense_loc = torch.tensor(
-            [page * self.PAGE * self.spec.blocks_per_page() + offset]
-        )
+        physical_loc = torch.tensor([page * self.PAGE + offset])
 
         pool._store_kv_layer(
             1,
-            dense_loc,
+            physical_loc,
             torch.full((1, 2, 8), 3.0, dtype=torch.bfloat16),
             torch.full((1, 2, 8), 5.0, dtype=torch.bfloat16),
         )

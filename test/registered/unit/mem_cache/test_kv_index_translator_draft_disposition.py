@@ -140,6 +140,18 @@ def _source(allocator, pool_obj):
 
 
 class TestKVIndexTranslatorDraftDisposition(unittest.TestCase):
+    def test_backend_resolved_target_keeps_virtual_batch_locations(self):
+        _, allocator, kvcache, _ = _build()
+        kvcache.backend_resolves_kv_indices = True
+        translator = _source(allocator, kvcache)
+        loc = allocator.alloc(_PS)
+        batch = SimpleNamespace(out_cache_loc=loc)
+
+        translator.rebind_write_loc(batch)
+
+        self.assertIs(batch.out_cache_loc, loc)
+        self.assertTrue(translator.defer_read_translate)
+
     def test_bind_accepts_a_lightweight_backend_wrapper(self):
         _, allocator, _, draft_pool = _build()
         translator = _source(allocator, draft_pool)
