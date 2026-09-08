@@ -339,6 +339,25 @@ class BasePrefixCache(ABC, PrefixCacheTrait):
                 reason=reason,
             )
 
+    def observe_recurrent_checkpoint_eviction(
+        self,
+        *,
+        checkpoint_position_tokens: int,
+        resident_full_prefix_tokens: int,
+        previous_checkpoint_gap_tokens: int,
+        has_previous_checkpoint: bool,
+        reason: str,
+    ) -> None:
+        """Record the cache topology seen before a Mamba-only eviction."""
+        if self.metrics_collector is not None:
+            self.metrics_collector.observe_recurrent_checkpoint_eviction(
+                checkpoint_position_tokens=checkpoint_position_tokens,
+                resident_full_prefix_tokens=resident_full_prefix_tokens,
+                previous_checkpoint_gap_tokens=previous_checkpoint_gap_tokens,
+                has_previous_checkpoint=has_previous_checkpoint,
+                reason=reason,
+            )
+
     def release_host_resources(self) -> None:
         """Release pinned host buffers in userspace on graceful shutdown.
 

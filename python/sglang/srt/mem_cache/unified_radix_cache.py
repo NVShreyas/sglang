@@ -157,6 +157,9 @@ class UnifiedRadixCache(BasePrefixCache):
         if params.enable_metrics:
             self.init_metrics_collector()
         self._enable_metrics_flag = params.enable_metrics
+        # Set only while allocator-driven device eviction is active. Components
+        # use this bounded value when emitting per-checkpoint topology metrics.
+        self._active_hybrid_eviction_reason = "unspecified"
         self.enable_storage_metrics = False
         self.storage_metrics_collector: Optional[StorageMetricsCollector] = None
         self.extra_metric_labels = None
@@ -672,11 +675,16 @@ class UnifiedRadixCache(BasePrefixCache):
         tracker = {ct: 0 for ct in self.tree_components}
 
         request_by_type = self._evict_request_by_type(params)
-        self._evict_components(
-            request_by_type,
-            tracker,
-            available_size_targets=available_size_targets,
-        )
+        previous_reason = self._active_hybrid_eviction_reason
+        self._active_hybrid_eviction_reason = params.reason
+        try:
+            self._evict_components(
+                request_by_type,
+                tracker,
+                available_size_targets=available_size_targets,
+            )
+        finally:
+            self._active_hybrid_eviction_reason = previous_reason
 
         if (
             self.cache_controller is not None

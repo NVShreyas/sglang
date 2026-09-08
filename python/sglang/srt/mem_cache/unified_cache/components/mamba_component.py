@@ -296,6 +296,7 @@ class MambaComponent(TreeComponent):
                 continue
             if node in self.tree_core.evictable_device_leaves:
                 continue
+            self._observe_checkpoint_only_eviction(node, reason="path_state_cap")
             self.tree_core._evict_component_and_detach_lru(
                 node,
                 self,
@@ -307,6 +308,57 @@ class MambaComponent(TreeComponent):
             self.tree_core._cascade_evict(node, self, tracker, device_frees, host_frees)
             excess -= 1
         return tracker[ct]
+
+    @staticmethod
+    def _node_depth(node: UnifiedTreeNode) -> int:
+        depth = 0
+        while node is not None and node.parent is not None:
+            depth += len(node.key)
+            node = node.parent
+        return depth
+
+    def _observe_checkpoint_only_eviction(
+        self, node: UnifiedTreeNode, *, reason: str
+    ) -> None:
+        """Observe an internal Mamba eviction while its Full-KV path survives.
+
+        This deliberately walks ancestors only. It therefore stays O(radix
+        depth) and reports the resident Full prefix at the checkpoint, rather
+        than scanning every descendant branch to estimate a future raw hit A.
+        Request-time A/U accounting supplies that complementary measurement.
+        """
+        if getattr(self.cache, "metrics_collector", None) is None:
+            return
+
+        checkpoint_position = self._node_depth(node)
+        previous = node.parent
+        while previous is not None and previous.parent is not None:
+            if previous.component_data[self.component_type].value is not None:
+                break
+            previous = previous.parent
+        has_previous = previous is not None and previous.parent is not None
+        previous_position = self._node_depth(previous) if has_previous else 0
+
+        # Count the contiguous device-resident Full prefix ending at the
+        # checkpoint. A hole makes later Full values unusable as a prefix.
+        path = []
+        cursor = node
+        while cursor is not None and cursor.parent is not None:
+            path.append(cursor)
+            cursor = cursor.parent
+        resident_full_prefix = 0
+        for path_node in reversed(path):
+            if path_node.component_data[ComponentType.FULL].value is None:
+                break
+            resident_full_prefix += len(path_node.key)
+
+        self.cache.observe_recurrent_checkpoint_eviction(
+            checkpoint_position_tokens=checkpoint_position,
+            resident_full_prefix_tokens=resident_full_prefix,
+            previous_checkpoint_gap_tokens=checkpoint_position - previous_position,
+            has_previous_checkpoint=has_previous,
+            reason=reason,
+        )
 
     def redistribute_on_node_split(
         self, new_parent: UnifiedTreeNode, child: UnifiedTreeNode
@@ -411,6 +463,10 @@ class MambaComponent(TreeComponent):
             return x.id
         if not enabled:
             x_next = lru.get_prev_no_lock(x)
+        self._observe_checkpoint_only_eviction(
+            x,
+            reason=getattr(self.cache, "_active_hybrid_eviction_reason", "unspecified"),
+        )
         self.tree_core._evict_component_and_detach_lru(
             x,
             self,

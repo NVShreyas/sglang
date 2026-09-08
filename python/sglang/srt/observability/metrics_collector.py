@@ -2232,6 +2232,53 @@ class RadixCacheMetricsCollector(_StatLoggerDIMixin):
             labelnames=list(labels.keys()) + ["reason"],
         )
 
+        hybrid_token_buckets = [
+            64,
+            128,
+            256,
+            512,
+            1024,
+            2048,
+            4096,
+            8192,
+            16384,
+            32768,
+            65536,
+            131072,
+            262144,
+            524288,
+            1048576,
+        ]
+        self.hybrid_cache_recurrent_checkpoint_evictions = Counter(
+            name="sglang:hybrid_cache_recurrent_checkpoint_evictions_total",
+            documentation="Mamba-only device checkpoint evictions for which "
+            "Full KV remains on the radix path, partitioned by whether an "
+            "earlier device checkpoint exists on that path.",
+            labelnames=list(labels.keys()) + ["reason", "previous_checkpoint"],
+        )
+        self.hybrid_cache_recurrent_eviction_checkpoint_position = Histogram(
+            name="sglang:hybrid_cache_recurrent_eviction_checkpoint_position_tokens",
+            documentation="Token position of a recurrent checkpoint immediately "
+            "before a Mamba-only device eviction.",
+            labelnames=list(labels.keys()) + ["reason"],
+            buckets=hybrid_token_buckets,
+        )
+        self.hybrid_cache_recurrent_eviction_resident_full_prefix = Histogram(
+            name="sglang:hybrid_cache_recurrent_eviction_resident_full_prefix_tokens",
+            documentation="Contiguous device-resident Full-KV prefix ending at "
+            "a recurrent checkpoint immediately before its Mamba-only eviction.",
+            labelnames=list(labels.keys()) + ["reason"],
+            buckets=hybrid_token_buckets,
+        )
+        self.hybrid_cache_recurrent_eviction_previous_checkpoint_gap = Histogram(
+            name="sglang:hybrid_cache_recurrent_eviction_previous_checkpoint_gap_tokens",
+            documentation="Distance from an evicted recurrent checkpoint to the "
+            "nearest earlier device checkpoint on the same radix path; when no "
+            "earlier checkpoint exists, the distance is from the root.",
+            labelnames=list(labels.keys()) + ["reason"],
+            buckets=hybrid_token_buckets,
+        )
+
         self.load_back_duration_seconds = Histogram(
             name="sglang:load_back_duration_seconds",
             documentation="GPU-stream span of a merged host-to-device load-back "
@@ -2311,6 +2358,30 @@ class RadixCacheMetricsCollector(_StatLoggerDIMixin):
             self.hybrid_cache_evicted_recurrent_states.labels(
                 **self.labels, reason=reason
             ).inc(recurrent_states)
+
+    def observe_recurrent_checkpoint_eviction(
+        self,
+        *,
+        checkpoint_position_tokens: int,
+        resident_full_prefix_tokens: int,
+        previous_checkpoint_gap_tokens: int,
+        has_previous_checkpoint: bool,
+        reason: str,
+    ) -> None:
+        labels = {**self.labels, "reason": reason}
+        self.hybrid_cache_recurrent_checkpoint_evictions.labels(
+            **labels,
+            previous_checkpoint=("present" if has_previous_checkpoint else "missing"),
+        ).inc()
+        self.hybrid_cache_recurrent_eviction_checkpoint_position.labels(
+            **labels
+        ).observe(checkpoint_position_tokens)
+        self.hybrid_cache_recurrent_eviction_resident_full_prefix.labels(
+            **labels
+        ).observe(resident_full_prefix_tokens)
+        self.hybrid_cache_recurrent_eviction_previous_checkpoint_gap.labels(
+            **labels
+        ).observe(previous_checkpoint_gap_tokens)
 
     def increment_load_back_num_tokens(self, num_tokens: int, pool: str) -> None:
         self.load_back_num_tokens.labels(**self.labels, pool=pool).inc(num_tokens)

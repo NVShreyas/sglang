@@ -1831,14 +1831,54 @@ class UnifiedRadixCacheSuite:
         self._insert(cache, allocator, req_to_token_pool, seq_long)
         self.assertEqual(cache.mamba_evictable_size(), 2)
 
-        result = cache.evict(EvictParams(num_tokens=0, mamba_num=1))
+        result = cache.evict(
+            EvictParams(
+                num_tokens=0,
+                mamba_num=1,
+                reason="recurrent_allocation_pressure",
+            )
+        )
         self.assertGreaterEqual(result.mamba_num_evicted, 1)
         cache.metrics_collector.increment_hybrid_cache_evictions.assert_called_once_with(
             full_attention_tokens=0,
             recurrent_states=result.mamba_num_evicted,
-            reason="unspecified",
+            reason="recurrent_allocation_pressure",
+        )
+        cache.metrics_collector.observe_recurrent_checkpoint_eviction.assert_called_once_with(
+            checkpoint_position_tokens=len(seq_short),
+            resident_full_prefix_tokens=len(seq_short),
+            previous_checkpoint_gap_tokens=len(seq_short),
+            has_previous_checkpoint=False,
+            reason="recurrent_allocation_pressure",
         )
         self.assertGreaterEqual(cache.full_evictable_size(), 0)
+        cache.sanity_check()
+
+    def test_mamba_evict_observes_previous_checkpoint(self):
+        if not self.cfg.has_mamba:
+            self.skipTest("requires Mamba component")
+        cache, allocator, req_to_token_pool = build_fixture(self.cfg)
+        cache.metrics_collector = mock.Mock()
+        seq_short = self._make_seq(1, 2)
+        seq_middle = seq_short + self._make_seq(500, 2)
+        seq_long = seq_middle + self._make_seq(1000, 2)
+        self._insert(cache, allocator, req_to_token_pool, seq_short)
+        self._insert(cache, allocator, req_to_token_pool, seq_middle)
+        self._insert(cache, allocator, req_to_token_pool, seq_long)
+
+        # Refresh the shallow checkpoint so the middle internal checkpoint is
+        # the next Mamba LRU victim. Its Full path remains resident.
+        cache.match_prefix(MatchPrefixParams(key=RadixKey(array("q", seq_short))))
+        result = cache.evict(EvictParams(num_tokens=0, mamba_num=1))
+
+        self.assertEqual(result.mamba_num_evicted, 1)
+        cache.metrics_collector.observe_recurrent_checkpoint_eviction.assert_called_once_with(
+            checkpoint_position_tokens=len(seq_middle),
+            resident_full_prefix_tokens=len(seq_middle),
+            previous_checkpoint_gap_tokens=len(seq_middle) - len(seq_short),
+            has_previous_checkpoint=True,
+            reason="unspecified",
+        )
         cache.sanity_check()
 
     def test_mamba_evict_breaks_match(self):
