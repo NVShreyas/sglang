@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from copy import copy
 from functools import lru_cache
 from typing import Dict, Optional, Tuple
@@ -543,7 +544,25 @@ class QwenSparseAttnBackend(AttentionBackend):
         # Prefix sharing is page-granular and the page is a ratio
         # multiple, so a matched prefix always covers whole groups. A
         # misaligned prefix would leave a shared group half-written.
-        torch._assert_async((prefix_lens % ratio == 0).all())
+        prefix_group_aligned = (prefix_lens % ratio == 0).all()
+        if os.environ.get("CUDA_LAUNCH_BLOCKING") == "1" and not bool(
+            prefix_group_aligned
+        ):
+            scheduler_prefix_lens = getattr(
+                forward_batch, "extend_prefix_lens", None
+            )
+            raise RuntimeError(
+                "QSA extend prefix is not compression-group aligned: "
+                f"mode={forward_batch.forward_mode}, ratio={ratio}, "
+                f"seq_lens={lengths.tolist()}, "
+                f"extend_seq_lens={extend_lens.tolist()}, "
+                f"derived_prefix_lens={prefix_lens.tolist()}, "
+                f"scheduler_prefix_lens="
+                f"{None if scheduler_prefix_lens is None else scheduler_prefix_lens.tolist()}, "
+                f"req_pool_indices={forward_batch.req_pool_indices.tolist()}, "
+                f"rids={getattr(forward_batch, 'rids', None)}"
+            )
+        torch._assert_async(prefix_group_aligned)
         # Each row spans at most ceil(extend_len / ratio) blocks, so the
         # token count and row count bound the plan without a sync.
         capacity = int(forward_batch.input_ids.numel()) // ratio + int(lengths.numel())
