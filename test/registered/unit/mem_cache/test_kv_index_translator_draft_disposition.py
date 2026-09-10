@@ -50,6 +50,7 @@ from sglang.srt.mem_cache.unified_memory_pool import (
     UnifiedDraftKVPool,
     UnifiedKVPool,
 )
+from sglang.srt.runtime_context import get_parallel
 from sglang.test.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=10, suite="base-a-test-cpu")
@@ -140,6 +141,9 @@ def _source(allocator, pool_obj):
 
 
 class TestKVIndexTranslatorDraftDisposition(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(get_parallel().override(attn_dcp_size=1))
+
     def test_backend_resolved_target_keeps_virtual_batch_locations(self):
         _, allocator, kvcache, _ = _build()
         kvcache.backend_resolves_kv_indices = True

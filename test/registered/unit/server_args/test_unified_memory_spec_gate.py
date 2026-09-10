@@ -45,6 +45,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import msgspec
+
 import sglang.srt.configs.hybrid_arch as hybrid_arch
 from sglang.srt.arg_groups.kv_cache_hook import handle_unified_memory_pool
 from sglang.srt.configs.model_config import AttentionArch
@@ -76,7 +78,7 @@ def _accepts(
     single handler under test with the fields it reads (disaggregation off, so
     only the speculative / cache / dcp / cuda-graph checks run).
     """
-    sa = ServerArgs.__new__(ServerArgs)
+    sa = ServerArgs(model_path="dummy")
     for name, value in {
         "enable_unified_memory": True,
         "disaggregation_mode": "null",
@@ -91,8 +93,8 @@ def _accepts(
         "prefill_attention_backend": None,
         "decode_attention_backend": None,
     }.items():
-        object.__setattr__(sa, name, value)
-    object.__setattr__(
+        msgspec.Struct.__setattr__(sa, name, value)
+    msgspec.Struct.__setattr__(
         sa,
         "_model_config",
         SimpleNamespace(

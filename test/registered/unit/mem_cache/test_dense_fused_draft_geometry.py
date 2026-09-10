@@ -398,6 +398,11 @@ def _mamba_spec():
 
 
 class TestFusedMLAHost(unittest.TestCase):
+    def setUp(self):
+        from sglang.srt.runtime_context import get_parallel
+
+        self.enterContext(get_parallel().override(attn_dcp_size=1))
+
     """MLA pages carry the fused draft region exactly like MHA pages: the
     same lcm-padded envelope, integral strides for both families, and
     byte-disjoint host/draft regions within every page. The unfused spec

@@ -46,6 +46,7 @@ from sglang.srt.mem_cache.unified_memory_pool import (
     UnifiedKVPool,
 )
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from sglang.srt.runtime_context import get_parallel
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
@@ -168,6 +169,10 @@ _PS = 2
 
 
 class TestDraftBindingDispatch(CustomTestCase):
+    def setUp(self):
+        super().setUp()
+        self.enterContext(get_parallel().override(attn_dcp_size=1))
+
     def _swa_allocator(self, *, with_draft_region: bool, n_full=32, n_swa=16):
         full_spec = MHASubPoolSpec(
             name="full",
