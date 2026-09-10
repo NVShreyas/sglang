@@ -142,7 +142,13 @@ def _source(allocator, pool_obj):
 
 class TestKVIndexTranslatorDraftDisposition(unittest.TestCase):
     def setUp(self):
-        self.enterContext(get_parallel().override(attn_dcp_size=1))
+        self.enterContext(
+            get_parallel().override(
+                attn_dcp_size=1,
+                dcp_enabled=False,
+                attn_dcp_rank=0,
+            )
+        )
 
     def test_backend_resolved_target_keeps_virtual_batch_locations(self):
         _, allocator, kvcache, _ = _build()
