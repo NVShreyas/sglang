@@ -680,6 +680,7 @@ class HybridSWAPoolConfigurator(MemoryPoolConfigurator):
                 )
 
         self._draft_cell_size = _dflash_draft_cell_size(kvc)
+        self._fused_full_entry = kvc.fused_full_entry_bytes()
 
         self._recompute_cell_size()
 
@@ -698,7 +699,6 @@ class HybridSWAPoolConfigurator(MemoryPoolConfigurator):
         # (host + draft + lcm pad, priced through the same spec the pool
         # factory builds) and the per-draft-layer approximation must not
         # double-charge.
-        self._fused_full_entry = kvc.fused_full_entry_bytes()
         if self._fused_full_entry is not None:
             self._draft_full_layers_num = 0
             # A fused DFLASH draft's KV is in the entry too; the separate
