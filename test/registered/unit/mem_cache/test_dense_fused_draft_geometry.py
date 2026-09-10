@@ -470,7 +470,7 @@ class TestFusedMLAHost(unittest.TestCase):
         kind-specific probe regression here silently reverts the draft to
         passthrough (raw virtual ids into dense views)."""
         from sglang.srt.mem_cache.kv_index_translator import KVIndexTranslator
-        from sglang.srt.mem_cache.multi_ended_allocator import (
+        from sglang.srt.mem_cache.allocator.unified_mamba import (
             UnifiedMambaTokenToKVPoolAllocator,
         )
 

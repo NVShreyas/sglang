@@ -36,7 +36,7 @@ from unittest.mock import patch
 import torch
 
 from sglang.srt.mem_cache import kv_cache_configurator as kcc
-from sglang.srt.mem_cache.multi_ended_allocator import (
+from sglang.srt.mem_cache.allocator.unified_hybrid_swa import (
     UnifiedSWATokenToKVPoolAllocator,
 )
 from sglang.srt.mem_cache.unified_memory_pool import (

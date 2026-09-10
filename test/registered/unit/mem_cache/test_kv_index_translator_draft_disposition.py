@@ -41,7 +41,7 @@ from sglang.srt.mem_cache.kv_index_translator import (
     KVIndexTable,
     KVIndexTranslator,
 )
-from sglang.srt.mem_cache.multi_ended_allocator import (
+from sglang.srt.mem_cache.allocator.unified_hybrid_swa import (
     UnifiedSWATokenToKVPoolAllocator,
 )
 from sglang.srt.mem_cache.unified_memory_pool import (
