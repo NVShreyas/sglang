@@ -631,6 +631,10 @@ class TestGoldenModelOverrides(_IsolatedPublish):
         sa = self._construct(
             "Qwen4ExpForConditionalGeneration",
             "qwen4_exp",
+            # Qwen4-Exp fixes head_dim at 256 and defaults V to the same
+            # width. The shared mini fixture's MLA-only v_head_dim=16 would
+            # otherwise manufacture an asymmetric model that Qwen is not.
+            config_extra={"v_head_dim": 256},
             enable_unified_memory=True,
             attention_backend="triton",
             linear_attn_prefill_backend="triton",
