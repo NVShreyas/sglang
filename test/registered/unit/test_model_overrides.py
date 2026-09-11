@@ -615,16 +615,27 @@ class TestGoldenModelOverrides(_IsolatedPublish):
         # value: readers only ever read flags.
         self.assertEqual((self._publish(sa), self._leaf("dtype"))[1], "auto")
 
-    def test_qwen4_rejects_pd_and_unified_memory(self):
+    def test_qwen4_rejects_pd(self):
         qwen4 = ("Qwen4ExpForConditionalGeneration", "qwen4_exp")
-        for kwargs, message in (
-            ({"disaggregation_mode": "prefill"}, "PD disaggregation"),
-            ({"disaggregation_mode": "decode"}, "PD disaggregation"),
-            ({"enable_unified_memory": True}, "enable-unified-memory"),
+        for kwargs in (
+            {"disaggregation_mode": "prefill"},
+            {"disaggregation_mode": "decode"},
         ):
             with self.subTest(**kwargs):
-                with self.assertRaisesRegex(ValueError, message):
+                with self.assertRaisesRegex(ValueError, "PD disaggregation"):
                     self._construct(*qwen4, **kwargs)
+
+    def test_qwen4_accepts_unified_memory_with_audited_backends(self):
+        """The QSA unified-pool implementation must survive the real model
+        override and resolution pipeline, not only the generic cache hook."""
+        sa = self._construct(
+            "Qwen4ExpForConditionalGeneration",
+            "qwen4_exp",
+            enable_unified_memory=True,
+            attention_backend="triton",
+            linear_attn_prefill_backend="triton",
+        )
+        self.assertTrue(self._resolved(sa, "enable_unified_memory"))
 
     def test_qwen4_ple_offload_default(self):
         qwen4 = ("Qwen4ExpForConditionalGeneration", "qwen4_exp")
