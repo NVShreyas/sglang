@@ -35,7 +35,9 @@ class Memory(msgspec.Struct):
             help=(
                 "The eviction policy of radix trees. 'lru' stands for Least "
                 "Recently Used, 'lfu' stands for Least Frequently Used, 'slru' "
-                "stands for Segmented Least Recently Used, and 'priority' evicts "
+                "stands for Segmented Least Recently Used, '2q' uses FIFO "
+                "probation, LRU protection, and a metadata-only ghost queue, "
+                "and 'priority' evicts "
                 "lower-priority requests first. See "
                 "https://docs.sglang.io/docs/advanced_features/radix_eviction_policy "
                 "for what each policy optimizes for."
@@ -52,9 +54,10 @@ class Memory(msgspec.Struct):
         Arg(
             help=(
                 "Tuning parameters for --radix-eviction-policy, as a json object "
-                "passed to the policy as keyword arguments. Only 'slru' takes any "
-                "today: protected_threshold (int, default 2), e.g. "
-                "'{\"protected_threshold\": 4}'. An unrecognized key fails at "
+                "passed to the policy as keyword arguments. 'slru' accepts "
+                "protected_threshold (int, default 2). '2q' accepts a1in_ratio "
+                "(float, default 0.25) and ghost_capacity_ratio (float, default "
+                "1.0). An unrecognized key fails at "
                 "startup, naming the key and the policy. See "
                 "https://docs.sglang.io/docs/advanced_features/radix_eviction_policy#policy-parameters "
                 "for the full parameter list."

@@ -16,6 +16,7 @@ from sglang.srt.mem_cache.evict_policy import (
     MRUStrategy,
     PriorityStrategy,
     SLRUStrategy,
+    TwoQStrategy,
 )
 
 
@@ -25,6 +26,13 @@ def _make_node(**kwargs):
     node.hit_count = kwargs.get("hit_count", 0)
     node.creation_time = kwargs.get("creation_time", 0.0)
     node.priority = kwargs.get("priority", 0)
+    node.id = kwargs.get("id", 0)
+    node.key = kwargs.get("key", [0])
+    node.two_q_key = kwargs.get("two_q_key", None)
+    node.two_q_device_protected = kwargs.get("two_q_device_protected", False)
+    node.two_q_device_seen = kwargs.get("two_q_device_seen", False)
+    node.two_q_host_protected = kwargs.get("two_q_host_protected", False)
+    node.two_q_host_seen = kwargs.get("two_q_host_seen", False)
     return node
 
 
@@ -180,6 +188,96 @@ class TestSLRUStrategy(unittest.TestCase):
     def test_default_threshold_is_2(self):
         default = SLRUStrategy()
         self.assertEqual(default.protected_threshold, 2)
+
+
+class TestTwoQStrategy(unittest.TestCase):
+    def setUp(self):
+        self.strategy = TwoQStrategy(a1in_ratio=0.25, ghost_capacity_ratio=1.0)
+
+    def test_second_resident_access_promotes(self):
+        node = _make_node(id=1, key=[1] * 4)
+        self.strategy.admit(node, "prefix")
+        self.strategy.record_access(node)
+        self.assertFalse(self.strategy.is_protected(node))
+        self.strategy.record_access(node)
+        self.assertTrue(self.strategy.is_protected(node))
+
+    def test_probationary_ghost_hit_promotes_on_admission(self):
+        node = _make_node(id=1, key=[1] * 4)
+        self.strategy.admit(node, "prefix")
+        self.strategy.resize_ghost(16)
+        self.strategy.record_eviction(node)
+
+        replacement = _make_node(id=2, key=[1] * 4)
+        self.strategy.admit(replacement, "prefix")
+        self.assertTrue(self.strategy.is_protected(replacement))
+        self.assertEqual(self.strategy.ghost_hits["device"], 1)
+
+    def test_a1in_budget_selects_fifo_probation_then_lru_protected(self):
+        old_probation = _make_node(
+            id=1, key=[1] * 20, creation_time=1, last_access_time=100
+        )
+        new_probation = _make_node(
+            id=2, key=[1] * 20, creation_time=2, last_access_time=101
+        )
+        old_protected = _make_node(
+            id=3,
+            key=[1] * 60,
+            creation_time=3,
+            last_access_time=3,
+            two_q_device_protected=True,
+        )
+        queue = self.strategy.create_eviction_queue(
+            [new_probation, old_protected, old_probation]
+        )
+
+        def live(_):
+            return True
+
+        self.assertIs(queue.pop(live), old_probation)
+        # A1in is now 20/80 tokens, exactly its 25% budget, so eviction
+        # switches to the LRU protected queue.
+        self.assertIs(queue.pop(live), old_protected)
+
+    def test_ghost_queue_is_token_bounded(self):
+        self.strategy.resize_ghost(10)
+        first = _make_node(id=1, key=[1] * 6)
+        second = _make_node(id=2, key=[1] * 6)
+        self.strategy.admit(first, "first")
+        self.strategy.admit(second, "second")
+        self.strategy.record_eviction(first)
+        self.strategy.record_eviction(second)
+        self.assertNotIn("first", self.strategy._ghost["device"])
+        self.assertIn("second", self.strategy._ghost["device"])
+        self.assertLessEqual(
+            self.strategy._ghost_tokens["device"],
+            self.strategy._ghost_capacity_tokens["device"],
+        )
+
+    def test_device_eviction_does_not_reset_host_state(self):
+        node = _make_node(id=1, key=[1] * 4)
+        self.strategy.admit(node, "prefix")
+        self.strategy.record_access(node)
+        self.strategy.record_access(node)
+        self.assertTrue(self.strategy.is_protected(node, tier="device"))
+        self.assertTrue(self.strategy.is_protected(node, tier="host"))
+
+        self.strategy.record_eviction(node, tier="device")
+
+        self.assertFalse(self.strategy.is_protected(node, tier="device"))
+        self.assertTrue(self.strategy.is_protected(node, tier="host"))
+
+    def test_device_ghost_hit_does_not_change_host_state(self):
+        node = _make_node(id=1, key=[1] * 4)
+        self.strategy.admit(node, "prefix")
+        self.strategy.resize_ghost(16, tier="device")
+        self.strategy.record_eviction(node, tier="device")
+
+        self.strategy.record_access(node, tiers=("device",))
+
+        self.assertTrue(self.strategy.is_protected(node, tier="device"))
+        self.assertFalse(self.strategy.is_protected(node, tier="host"))
+        self.assertEqual(self.strategy.ghost_hits["device"], 1)
 
 
 class TestEvictionOrdering(unittest.TestCase):

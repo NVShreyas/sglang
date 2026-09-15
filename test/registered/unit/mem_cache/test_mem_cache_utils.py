@@ -16,6 +16,7 @@ from sglang.srt.mem_cache.evict_policy import (
     MRUStrategy,
     PriorityStrategy,
     SLRUStrategy,
+    TwoQStrategy,
 )
 from sglang.srt.mem_cache.utils import (
     compute_node_event_hash_values,
@@ -170,6 +171,9 @@ class TestGetEvictionStrategy(unittest.TestCase):
     def test_slru(self):
         self.assertIsInstance(get_eviction_strategy("slru"), SLRUStrategy)
 
+    def test_two_q(self):
+        self.assertIsInstance(get_eviction_strategy("2q"), TwoQStrategy)
+
     def test_case_insensitive(self):
         self.assertIsInstance(get_eviction_strategy("LRU"), LRUStrategy)
         self.assertIsInstance(get_eviction_strategy("Lru"), LRUStrategy)
@@ -187,6 +191,7 @@ class TestGetEvictionStrategy(unittest.TestCase):
         self.assertIn("filo", msg)
         self.assertIn("priority", msg)
         self.assertIn("slru", msg)
+        self.assertIn("2q", msg)
 
     def test_each_call_creates_new_instance(self):
         s1 = get_eviction_strategy("lru")

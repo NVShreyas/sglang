@@ -39,6 +39,7 @@ from sglang.srt.mem_cache.base_prefix_cache import (
     _dfs_weight_order,
 )
 from sglang.srt.mem_cache.events import KVCacheEventRecorder
+from sglang.srt.mem_cache.evict_policy import TwoQStrategy
 from sglang.srt.mem_cache.hicache_storage import (
     PoolName,
     PoolTransfer,
@@ -82,6 +83,7 @@ from sglang.srt.mem_cache.unified_cache.unified_tree_core_interface import (
 from sglang.srt.mem_cache.utils import (
     compute_node_hash_values,
     get_eviction_strategy,
+    get_storage_hash_str,
     split_node_hash_value,
 )
 
@@ -138,6 +140,13 @@ class UnifiedTreeNode:
         self.id = UnifiedTreeNode.counter
         UnifiedTreeNode.counter += 1
         self.write_through_pending_id: Optional[int] = None
+        # 2Q metadata is CPU-only: a fixed-size path fingerprint and two bits
+        # per residency tier. Device and host demotions are independent.
+        self.two_q_key = None
+        self.two_q_device_protected = False
+        self.two_q_device_seen = False
+        self.two_q_host_protected = False
+        self.two_q_host_seen = False
         # Anchor NodeId of an in-flight H->D load-back reading this node's
         # host slots; such host copies must not be reclaimed until the ack.
         self.load_back_pending_id: Optional[int] = None
@@ -460,6 +469,9 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
     def reset(self) -> None:
         """Rebuild the root, LRUs, sizes, evictable-leaf sets, and the empty
         match result."""
+        if isinstance(self.eviction_strategy, TwoQStrategy):
+            self.eviction_strategy.reset()
+
         # Maintains the NodeId -> active tree node mapping.
         self._node_arena: dict[NodeId, UnifiedTreeNode] = {}
 
@@ -965,6 +977,19 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
                     continue
                 comp.refresh_lru(LRURefreshPhase.WALKDOWN, node, self.root_node)
 
+    def _two_q_key_for_node(self, node: UnifiedTreeNode):
+        if node.two_q_key is not None:
+            return node.two_q_key
+        parent_key = None
+        if node.parent is not None and node.parent is not self.root_node:
+            parent_key = self._two_q_key_for_node(node.parent)
+        hashes = get_storage_hash_str(
+            node.key, prior_hash=parent_key, page_size=self.page_size
+        )
+        assert isinstance(hashes, list) and hashes
+        node.two_q_key = hashes[-1]
+        return node.two_q_key
+
     def _inc_hit_count_and_check(
         self, node: UnifiedTreeNode, chunked: bool = False
     ) -> bool:
@@ -974,6 +999,8 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
         if self.is_write_back:
             return False
         node.hit_count += 1
+        if isinstance(self.eviction_strategy, TwoQStrategy):
+            self.eviction_strategy.record_access(node)
 
         if self.enable_external_cache_linker:
             return (
@@ -1331,6 +1358,10 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
         for component in self.components:
             component.redistribute_on_node_split(new_parent=new_node, child=child)
         new_node.parent.children[key.child_key(self.page_size)] = new_node
+        if isinstance(self.eviction_strategy, TwoQStrategy):
+            self.eviction_strategy.inherit(
+                new_node, child, self._two_q_key_for_node(new_node)
+            )
 
         # A split of a backuped node tells the cache to fix its publish list.
         action: Optional[CacheAction | ComponentAction] = None
@@ -1378,6 +1409,8 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
         new_node.rotation_base = rotation_base
         new_node.component_data[BASE_COMPONENT_TYPE].value = value.clone()
         parent.children[key.child_key(self.page_size)] = new_node
+        if isinstance(self.eviction_strategy, TwoQStrategy):
+            self.eviction_strategy.admit(new_node, self._two_q_key_for_node(new_node))
         self.component_evictable_size_[BASE_COMPONENT_TYPE] += len(value)
         if self.enable_storage or self.enable_external_cache_linker:
             new_node.hash_value = compute_node_hash_values(new_node, self.page_size)
@@ -1929,6 +1962,14 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
         ):
             self._tracked_unbacked_tokens += device_freed
 
+        if comp.component_type == BASE_COMPONENT_TYPE and isinstance(
+            self.eviction_strategy, TwoQStrategy
+        ):
+            if device_freed > 0:
+                self.eviction_strategy.record_eviction(node, tier="device")
+            if host_freed > 0:
+                self.eviction_strategy.record_eviction(node, tier="host")
+
         # Detach from the appropriate LRU list(s)
         ct = comp.component_type
         for layer, lru_lists in (
@@ -2126,6 +2167,8 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
         new_node.hash_value = hash_value
         new_node.component_data[BASE_COMPONENT_TYPE].host_value = host_value.clone()
         node.children[child_key] = new_node
+        if isinstance(self.eviction_strategy, TwoQStrategy):
+            self.eviction_strategy.admit(new_node, self._two_q_key_for_node(new_node))
         self._update_evictable_leaf_sets(new_node)
         self._update_evictable_leaf_sets(node)
         result.inserted_host_node = new_node.id
@@ -2348,7 +2391,12 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
             cache_actions=cache_actions,
         )
         for nid in kv_xfer.nodes_to_load or ():
-            self.kv_events.record_store(self.node_by_id(nid), medium=StorageMedium.GPU)
+            loaded_node = self.node_by_id(nid)
+            self.kv_events.record_store(loaded_node, medium=StorageMedium.GPU)
+            # In 2Q, a requested prefix returning from the metadata-only
+            # device ghost queue is promoted directly into Am.
+            if isinstance(self.eviction_strategy, TwoQStrategy):
+                self.eviction_strategy.record_access(loaded_node, tiers=("device",))
         for ct, xfers in comp_xfers.items():
             self.components_by_type[ct].commit_hicache_transfer(
                 node,

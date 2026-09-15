@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
 import torch
 
+from sglang.srt.mem_cache.evict_policy import TwoQStrategy
 from sglang.srt.mem_cache.base_prefix_cache import (
     DecLockRefParams,
     EvictParams,
@@ -195,11 +196,21 @@ class FullComponent(TreeComponent):
         self._ensure_eviction_strategy()
         self._evict_device_request_cnt = request_cnt
         self._evict_device_last_node = None
-        self._evict_device_heap = [
-            (self.session_ref_eviction_strategy(n), n)
-            for n in self.tree_core.evictable_device_leaves
-        ]
-        heapq.heapify(self._evict_device_heap)
+        strategy = self.tree_core.eviction_strategy
+        if isinstance(strategy, TwoQStrategy):
+            if self.cache.enable_session_radix_cache:
+                raise ValueError("2q does not yet support session radix references")
+            self._evict_device_two_q_queue = strategy.create_eviction_queue(
+                self.tree_core.evictable_device_leaves, tier="device"
+            )
+            self._evict_device_heap = []
+        else:
+            self._evict_device_two_q_queue = None
+            self._evict_device_heap = [
+                (self.session_ref_eviction_strategy(n), n)
+                for n in self.tree_core.evictable_device_leaves
+            ]
+            heapq.heapify(self._evict_device_heap)
 
     def _evict_device_next_node(
         self,
@@ -214,11 +225,25 @@ class FullComponent(TreeComponent):
             and lv.parent is not None
             and lv.parent in self.tree_core.evictable_device_leaves
         ):
-            heapq.heappush(
-                self._evict_device_heap,
-                (self.session_ref_eviction_strategy(lv.parent), lv.parent),
-            )
+            if self._evict_device_two_q_queue is not None:
+                self._evict_device_two_q_queue.push(lv.parent)
+            else:
+                heapq.heappush(
+                    self._evict_device_heap,
+                    (self.session_ref_eviction_strategy(lv.parent), lv.parent),
+                )
         self._evict_device_last_node = None
+        if (
+            tracker[ct] < self._evict_device_request_cnt
+            and self._evict_device_two_q_queue is not None
+        ):
+            x = self._evict_device_two_q_queue.pop(
+                self.tree_core.evictable_device_leaves.__contains__
+            )
+            if x is not None:
+                self._evict_device_last_node = x
+                return x.id
+            return None
         while tracker[ct] < self._evict_device_request_cnt and self._evict_device_heap:
             _, x = heapq.heappop(self._evict_device_heap)
             if x not in self.tree_core.evictable_device_leaves:
@@ -229,6 +254,7 @@ class FullComponent(TreeComponent):
 
     def _evict_device_end(self) -> None:
         self._evict_device_heap = []
+        self._evict_device_two_q_queue = None
         self._evict_device_last_node = None
 
     def drive_host_eviction(
@@ -240,6 +266,25 @@ class FullComponent(TreeComponent):
     ) -> None:
         """Evict host leaves to free KV host pool space."""
         self._ensure_eviction_strategy()
+        strategy = self.tree_core.eviction_strategy
+        if isinstance(strategy, TwoQStrategy):
+            if self.cache.enable_session_radix_cache:
+                raise ValueError("2q does not yet support session radix references")
+            queue = strategy.create_eviction_queue(
+                self.tree_core.evictable_host_leaves, tier="host"
+            )
+            ct = self.component_type
+            while tracker[ct] < num_tokens:
+                x = queue.pop(self.tree_core.evictable_host_leaves.__contains__)
+                if x is None:
+                    break
+                self.tree_core._evict_host_leaf(x, tracker, device_frees, host_frees)
+                if (
+                    x.parent is not None
+                    and x.parent in self.tree_core.evictable_host_leaves
+                ):
+                    queue.push(x.parent)
+            return
         heap = [
             (self.session_ref_eviction_strategy(n), n)
             for n in self.tree_core.evictable_host_leaves

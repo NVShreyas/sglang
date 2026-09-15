@@ -46,9 +46,11 @@ from sglang.srt.mem_cache.base_prefix_cache import (
     MatchResult,
 )
 from sglang.srt.mem_cache.events import KVCacheEventRecorder
+from sglang.srt.mem_cache.evict_policy import TwoQStrategy
 from sglang.srt.mem_cache.utils import (
     get_eviction_strategy,
     get_hash_str,
+    get_storage_hash_str,
     split_node_hash_value,
 )
 
@@ -278,6 +280,11 @@ class TreeNode:
         self.event_hash_value: Optional[List[str]] = None
         # priority for priority-aware eviction
         self.priority = priority
+        self.two_q_key = None
+        self.two_q_device_protected = False
+        self.two_q_device_seen = False
+        self.two_q_host_protected = False
+        self.two_q_host_seen = False
 
         self.id = TreeNode.counter if id is None else id
         TreeNode.counter += 1
@@ -372,6 +379,8 @@ class RadixCache(BasePrefixCache):
     ##### Public API #####
 
     def reset(self):
+        if isinstance(self.eviction_strategy, TwoQStrategy):
+            self.eviction_strategy.reset()
         # Initialize root with minimum priority so any real priority overrides it
         self.root_node = TreeNode(priority=-sys.maxsize)
         self.root_node.key = RadixKey(token_ids=array("q"), extra_key=None)
@@ -642,23 +651,38 @@ class RadixCache(BasePrefixCache):
         start_time = time.perf_counter()
         num_tokens = params.num_tokens
         leaves = list(self.evictable_leaves)
-        eviction_heap = [
-            (self.eviction_strategy.get_priority(node), node) for node in leaves
-        ]
-        heapq.heapify(eviction_heap)
+        two_q_queue = None
+        if isinstance(self.eviction_strategy, TwoQStrategy):
+            two_q_queue = self.eviction_strategy.create_eviction_queue(leaves)
+            eviction_heap = []
+        else:
+            eviction_heap = [
+                (self.eviction_strategy.get_priority(node), node) for node in leaves
+            ]
+            heapq.heapify(eviction_heap)
 
         num_evicted = 0
-        while num_evicted < num_tokens and len(eviction_heap):
-            _priority, x = heapq.heappop(eviction_heap)
+        while num_evicted < num_tokens and (two_q_queue is not None or eviction_heap):
+            if two_q_queue is not None:
+                x = two_q_queue.pop(self.evictable_leaves.__contains__)
+                if x is None:
+                    break
+            else:
+                _priority, x = heapq.heappop(eviction_heap)
 
             # Tree values are page-aligned copies of a kv row: page-exact segment.
             self.token_to_kv_pool_allocator.free_segment(x.value, start_pos=0)
             num_evicted += len(x.value)
+            if isinstance(self.eviction_strategy, TwoQStrategy):
+                self.eviction_strategy.record_eviction(x)
             self._delete_leaf(x)
 
             if len(x.parent.children) == 0 and x.parent.lock_ref == 0:
-                new_priority = self.eviction_strategy.get_priority(x.parent)
-                heapq.heappush(eviction_heap, (new_priority, x.parent))
+                if two_q_queue is not None:
+                    two_q_queue.push(x.parent)
+                else:
+                    new_priority = self.eviction_strategy.get_priority(x.parent)
+                    heapq.heappush(eviction_heap, (new_priority, x.parent))
 
             self.kv_events.record_remove(x)
 
@@ -761,6 +785,10 @@ class RadixCache(BasePrefixCache):
         child.key = child.key[split_len:]
         child.value = child.value[split_len:].clone()
         new_node.parent.children[key.child_key(self.page_size)] = new_node
+        if isinstance(self.eviction_strategy, TwoQStrategy):
+            self.eviction_strategy.inherit(
+                new_node, child, self._two_q_key_for_node(new_node)
+            )
 
         # Split hash_value if it was already computed, otherwise leave as None
         new_node.hash_value, child.hash_value = split_node_hash_value(
@@ -779,6 +807,21 @@ class RadixCache(BasePrefixCache):
         if chunked:
             return
         node.hit_count += 1
+        if isinstance(self.eviction_strategy, TwoQStrategy):
+            self.eviction_strategy.record_access(node)
+
+    def _two_q_key_for_node(self, node: TreeNode):
+        if node.two_q_key is not None:
+            return node.two_q_key
+        parent_key = None
+        if node.parent is not None and node.parent is not self.root_node:
+            parent_key = self._two_q_key_for_node(node.parent)
+        hashes = get_storage_hash_str(
+            node.key, prior_hash=parent_key, page_size=self.page_size
+        )
+        assert isinstance(hashes, list) and hashes
+        node.two_q_key = hashes[-1]
+        return node.two_q_key
 
     def _insert_helper(
         self,
@@ -825,6 +868,10 @@ class RadixCache(BasePrefixCache):
             new_node.parent = node
             new_node.key = key
             new_node.value = value.clone()
+            if isinstance(self.eviction_strategy, TwoQStrategy):
+                self.eviction_strategy.admit(
+                    new_node, self._two_q_key_for_node(new_node)
+                )
             self._inc_hit_count(new_node, chunked)
             node.children[child_key] = new_node
             self.evictable_size_ += len(key)
