@@ -1696,6 +1696,7 @@ class UnifiedRadixCache(BasePrefixCache):
         # Build the KV + per-component aux transfers.
         kv_xfer, comp_xfers = self.tree_core.build_load_back_spec(node_id, req=req)
         kv_tokens = len(kv_xfer.host_indices)
+        checkpoint_source = self._classify_load_back_checkpoint(node_id, comp_xfers)
         sidecar_xfers = self._build_sidecar_transfers(
             CacheTransferPhase.LOAD_BACK, kv_xfer, comp_xfers
         )
@@ -1759,6 +1760,12 @@ class UnifiedRadixCache(BasePrefixCache):
             )
         )
 
+        if kv_tokens > 0 and self.metrics_collector is not None:
+            self.metrics_collector.increment_hicache_kv_load_back_checkpoint(
+                checkpoint_source=checkpoint_source,
+                kv_tokens=kv_tokens,
+            )
+
         self.ongoing_load_back[node_id] = _OngoingLoadBack(
             node_id,
             self.inc_lock_ref(node_id).to_dec_params(),
@@ -1766,6 +1773,32 @@ class UnifiedRadixCache(BasePrefixCache):
         )
 
         return True
+
+    def _classify_load_back_checkpoint(
+        self,
+        node_id: NodeId,
+        comp_xfers: dict[ComponentType, list[PoolTransfer]],
+    ) -> str:
+        """Classify the checkpoint paired with a Full-KV host restoration.
+
+        This is deliberately evaluated before the H->D copy mutates residency.
+        A Mamba transfer means the checkpoint is host-backed and will be
+        restored by this operation.  Otherwise a device value means the
+        endpoint survived on GPU.  ``unavailable`` includes endpoints without
+        a checkpoint and checkpoints that no longer exist in either tier; the
+        request-level hit/trim counters distinguish how much KV ultimately
+        remained usable.
+        """
+        if ComponentType.MAMBA not in self.components:
+            return "not_applicable"
+        if comp_xfers.get(ComponentType.MAMBA):
+            return "host_restored"
+        if (
+            self.tree_core.get_component_device_value(node_id, ComponentType.MAMBA)
+            is not None
+        ):
+            return "device_resident"
+        return "unavailable"
 
     def _build_sidecar_transfers(
         self,

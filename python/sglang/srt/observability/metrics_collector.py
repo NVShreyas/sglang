@@ -2248,6 +2248,23 @@ class RadixCacheMetricsCollector(_StatLoggerDIMixin):
             labelnames=list(labels.keys()) + ["pool"],
         )
 
+        self.hicache_kv_load_back_checkpoint_operations = Counter(
+            name="sglang:hicache_kv_load_back_checkpoint_operations_total",
+            documentation="Successful host-to-device Full-KV load-back "
+            "operations classified by the recurrent checkpoint available at "
+            "the restored radix endpoint: device_resident, host_restored, "
+            "unavailable, or not_applicable.",
+            labelnames=list(labels.keys()) + ["checkpoint_source"],
+        )
+
+        self.hicache_kv_load_back_checkpoint_tokens = Counter(
+            name="sglang:hicache_kv_load_back_checkpoint_tokens_total",
+            documentation="Full-KV tokens successfully loaded from host to "
+            "device, classified by the recurrent checkpoint available at the "
+            "restored radix endpoint.",
+            labelnames=list(labels.keys()) + ["checkpoint_source"],
+        )
+
         self.backup_duration_seconds = Histogram(
             name="sglang:hicache_backup_duration_seconds",
             documentation="Time taken to back up KV cache from GPU to local "
@@ -2314,6 +2331,16 @@ class RadixCacheMetricsCollector(_StatLoggerDIMixin):
 
     def increment_load_back_num_tokens(self, num_tokens: int, pool: str) -> None:
         self.load_back_num_tokens.labels(**self.labels, pool=pool).inc(num_tokens)
+
+    def increment_hicache_kv_load_back_checkpoint(
+        self, *, checkpoint_source: str, kv_tokens: int
+    ) -> None:
+        self.hicache_kv_load_back_checkpoint_operations.labels(
+            **self.labels, checkpoint_source=checkpoint_source
+        ).inc()
+        self.hicache_kv_load_back_checkpoint_tokens.labels(
+            **self.labels, checkpoint_source=checkpoint_source
+        ).inc(kv_tokens)
 
     def observe_eviction_duration(self, duration_seconds: float) -> None:
         self.eviction_duration_seconds.labels(**self.labels).observe(duration_seconds)
