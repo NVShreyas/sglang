@@ -156,6 +156,8 @@ class SchedulerStats:
     # HiCache metrics
     hicache_host_used_tokens: int = 0
     hicache_host_total_tokens: int = 0
+    hicache_host_pool_used_slots: Dict[str, int] = field(default_factory=dict)
+    hicache_host_pool_total_slots: Dict[str, int] = field(default_factory=dict)
 
     # Streaming session metrics
     num_streaming_sessions: int = 0
@@ -649,6 +651,18 @@ class SchedulerMetricsCollector(_StatLoggerDIMixin):
                 name="sglang:hicache_host_total_tokens",
                 documentation="Total capacity of the host KV cache in tokens.",
                 labelnames=labels.keys(),
+                multiprocess_mode="mostrecent",
+            )
+            self.hicache_host_pool_used_slots = Gauge(
+                name="sglang:hicache_host_pool_used_slots",
+                documentation="Number of currently allocated host-cache slots by pool.",
+                labelnames=list(labels.keys()) + ["pool"],
+                multiprocess_mode="mostrecent",
+            )
+            self.hicache_host_pool_total_slots = Gauge(
+                name="sglang:hicache_host_pool_total_slots",
+                documentation="Total host-cache slot capacity by pool.",
+                labelnames=list(labels.keys()) + ["pool"],
                 multiprocess_mode="mostrecent",
             )
 
@@ -1441,6 +1455,14 @@ class SchedulerMetricsCollector(_StatLoggerDIMixin):
             self._log_gauge(
                 self.hicache_host_total_tokens, stats.hicache_host_total_tokens
             )
+            for pool, value in stats.hicache_host_pool_used_slots.items():
+                self.hicache_host_pool_used_slots.labels(**self.labels, pool=pool).set(
+                    value
+                )
+            for pool, value in stats.hicache_host_pool_total_slots.items():
+                self.hicache_host_pool_total_slots.labels(**self.labels, pool=pool).set(
+                    value
+                )
 
         # Streaming session metrics
         if self.enable_streaming_session:
@@ -2314,6 +2336,20 @@ class RadixCacheMetricsCollector(_StatLoggerDIMixin):
             labelnames=list(labels.keys()) + ["reason", "pool"],
         )
 
+        self.hicache_host_evicted_slots = Counter(
+            name="sglang:hicache_host_evicted_slots_total",
+            documentation="Host-cache slots freed by pool and by the pool whose "
+            "allocation pressure triggered the eviction pass.",
+            labelnames=list(labels.keys()) + ["pool", "trigger_pool"],
+        )
+
+        self.hicache_host_evicted_nodes = Counter(
+            name="sglang:hicache_host_evicted_nodes_total",
+            documentation="Host radix/component values evicted by pool and by "
+            "the pool whose allocation pressure triggered the eviction pass.",
+            labelnames=list(labels.keys()) + ["pool", "trigger_pool"],
+        )
+
     def increment_eviction_num_tokens(self, num_tokens: int) -> None:
         self.eviction_num_tokens.labels(**self.labels).inc(num_tokens)
 
@@ -2364,6 +2400,18 @@ class RadixCacheMetricsCollector(_StatLoggerDIMixin):
         self.hicache_dropped_tokens.labels(**self.labels, reason=reason, pool=pool).inc(
             num_tokens
         )
+
+    def increment_hicache_host_evictions(
+        self, *, pool: str, trigger_pool: str, slots: int, nodes: int
+    ) -> None:
+        if slots > 0:
+            self.hicache_host_evicted_slots.labels(
+                **self.labels, pool=pool, trigger_pool=trigger_pool
+            ).inc(slots)
+        if nodes > 0:
+            self.hicache_host_evicted_nodes.labels(
+                **self.labels, pool=pool, trigger_pool=trigger_pool
+            ).inc(nodes)
 
 
 class EncoderMetricsCollector(_StatLoggerDIMixin):

@@ -1310,8 +1310,23 @@ class UnifiedRadixCache(BasePrefixCache):
             # is operation-owned (freed at each ack): nothing is evictable.
             return 0
         result = self.tree_core.drive_host_eviction(component_type, num_tokens)
+        if self.metrics_collector is not None:
+            trigger_pool = self._host_metric_pool_name(component_type)
+            for evicted_component, slots in result.tracker.items():
+                if slots <= 0:
+                    continue
+                self.metrics_collector.increment_hicache_host_evictions(
+                    pool=self._host_metric_pool_name(evicted_component),
+                    trigger_pool=trigger_pool,
+                    slots=slots,
+                    nodes=len(result.host_frees.get(evicted_component, ())),
+                )
         self._free_values(result.device_frees, result.host_frees)
         return result.tracker.get(component_type, 0)
+
+    @staticmethod
+    def _host_metric_pool_name(component_type: ComponentType) -> str:
+        return "kv" if component_type == BASE_COMPONENT_TYPE else str(component_type)
 
     # ---- Decode retraction ----
 
